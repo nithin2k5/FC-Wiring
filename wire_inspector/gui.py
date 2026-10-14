@@ -96,6 +96,9 @@ class WireInspectorApp:
         self.cam_btn.pack(side=tk.LEFT, padx=(10, 0))
         self.live_inspect = tk.BooleanVar(value=True)
         ttk.Checkbutton(cambar, text="Live inspect", variable=self.live_inspect).pack(side=tk.LEFT, padx=6)
+        self.flip_vertical = tk.BooleanVar(value=self.config.get("flip_vertical", False))
+        ttk.Checkbutton(cambar, text="Flip upside down", variable=self.flip_vertical,
+                        command=self._on_flip).pack(side=tk.LEFT)
         self.cam_info = ttk.Label(cambar, text="", foreground="#666")
         self.cam_info.pack(side=tk.LEFT, padx=6)
 
@@ -333,6 +336,17 @@ class WireInspectorApp:
         data = np.fromfile(str(path), dtype=np.uint8)
         return cv2.imdecode(data, cv2.IMREAD_COLOR) if data.size else None
 
+    def _orient(self, frame):
+        """Apply the flip setting to an incoming image or camera frame."""
+        return cv2.flip(frame, 0) if self.flip_vertical.get() else frame
+
+    def _on_flip(self):
+        self.config["flip_vertical"] = self.flip_vertical.get()
+        if self.capture is None and 0 <= self.image_index < len(self.image_paths):
+            self.show_image(self.image_index)
+        self.set_status("Images are " + ("flipped upside down" if self.flip_vertical.get() else "no longer flipped")
+                        + ". Save Config to keep this setting.")
+
     def open_images(self):
         paths = filedialog.askopenfilenames(
             filetypes=[("Images", "*.png *.jpg *.jpeg *.bmp *.tif *.tiff"), ("All files", "*.*")])
@@ -371,7 +385,7 @@ class WireInspectorApp:
             self.redraw()
             self.set_status(f"Could not read {path}")
             return
-        self.frame = frame
+        self.frame = self._orient(frame)
         self.set_status(f"Loaded {path.name}  ({frame.shape[1]}x{frame.shape[0]})")
         self.run_inspection()
 
@@ -388,7 +402,7 @@ class WireInspectorApp:
             if frame is None:
                 rows.append((path, "ERROR", "Could not read image"))
                 continue
-            result = inspect(frame, self.config, self.profile_var.get())
+            result = inspect(self._orient(frame), self.config, self.profile_var.get())
             rows.append((path, "PASS" if result.passed else "FAIL",
                          "; ".join(f"{r.name}: {r.message}" for r in result.regions)))
         BatchReport(self, rows, self.profile_var.get())
@@ -482,11 +496,11 @@ class WireInspectorApp:
                 return
         else:
             self.read_failures = 0
-            self.frame = frame
+            self.frame = self._orient(frame)
             if self.live_inspect.get() and not self.edit_mode.get():
                 self.run_inspection(quiet=True)
             else:
-                self.display = frame
+                self.display = self.frame
                 self.redraw()
         self.root.after(60, self._camera_loop, session)
 

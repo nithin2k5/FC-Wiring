@@ -14,6 +14,7 @@ python main.py
 1. **Open Images** (select one or more files), **Open Folder**, or use the camera bar: pick a detected camera from the **Camera** list, choose a **Resolution**, and press **Start Camera**. Press **Refresh** after plugging in a camera. Changing the camera or resolution while it is running restarts it.
 2. Choose a **Profile** (part model). The verdict panel shows PASS/FAIL, and the table shows the expected and detected order for each region.
 3. With **Live inspect** on, every camera frame is inspected automatically. **Save Result** writes the annotated image.
+4. If the camera is mounted upside down, tick **Flip upside down**. It applies to camera frames and loaded images, and **Save Config** remembers it. Set it before configuring regions: regions drawn on unflipped images won't find their connectors once the image is flipped.
 
 ### Testing with images
 
