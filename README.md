@@ -25,10 +25,12 @@ After loading several images or a folder, step through them with **< Prev** / **
 ### Configuring a new model
 
 1. Load a reference image, click **New**, and enter the model name.
-2. Turn on **Edit regions** and drag a box around the wire exit of each connector. Keep the box tight: it should cover the wires only, not the blue fixture.
+2. Turn on **Edit regions** and drag the **wires ROI** (yellow) for the first connector: a tight box over the wire exit, covering the wires only, not the blue fixture.
 3. Enter the expected colors left to right, e.g. `black, blue` or, for a 3 or 4 wire connector, `black, blue, black, red`. A color can appear more than once.
-4. Next, the app asks for the connector: drag a tight box around the connector body (the green housing and black boot), not the wires or the fixture. This picture (the *anchor*) is how the region finds its connector anywhere in the frame. Press Esc to skip, and the region stays at a fixed position. **Set connector** redoes this for the selected region. Use a clean camera frame, not an annotated image.
-5. Click **Save Config**.
+4. A banner then asks for the **connector ROI** (magenta): drag a tight box around the connector body (the green housing and black boot), not the wires or the fixture. This picture (the *anchor*) is how the region finds its connector anywhere in the frame. Press Esc to skip, and the region stays at a fixed position.
+5. Repeat for each connector, then click **Save Config**.
+
+In edit mode both ROIs are drawn and labelled where the connector is in the current image. To change one later, select the region and press **Draw wires ROI** or **Draw connector ROI**. You can redraw on any image, even one where the connector has moved: the other ROI stays aligned. Use real camera frames (for example from **Capture**), not annotated images.
 
 ## How detection works
 
