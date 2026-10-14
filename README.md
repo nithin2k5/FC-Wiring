@@ -43,6 +43,21 @@ The settings you can tune in `config.json`:
 - `detection.anchor_min_score`: minimum template match (0–1) to accept the connector's new position.
 - `profiles.<model>.image_size`: the resolution the boxes were drawn at. Boxes scale automatically to other resolutions.
 
+## Project layout
+
+- `wire_engine/`: the core logic: wire color detection, connector location and the order check. It has no GUI code, so it can be used from scripts:
+
+  ```python
+  import cv2
+  from wire_engine import inspect, load_config
+
+  result = inspect(cv2.imread("image.png"), load_config("config.json"), "FCFK2FF3")
+  print(result.passed, [r.message for r in result.regions])
+  ```
+
+- `wire_inspector/`: the Tkinter app (`gui.py`) and camera handling (`camera.py`).
+- `main.py`: starts the app.
+
 ## Tests
 
 ```

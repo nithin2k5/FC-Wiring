@@ -4,7 +4,7 @@ import cv2
 import numpy as np
 import pytest
 
-from wire_inspector.detector import inspect, load_config, make_anchor
+from wire_engine import inspect, load_config, make_anchor
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = load_config(ROOT / "config.json")

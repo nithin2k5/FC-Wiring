@@ -13,7 +13,7 @@ import numpy as np
 from PIL import Image, ImageTk
 
 from .camera import RESOLUTIONS, list_cameras, open_camera
-from .detector import draw_result, inspect, load_config, make_anchor, save_config, scale_box
+from wire_engine import draw_result, inspect, load_config, make_anchor, save_config, scale_box
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
 PASS_BG = "#1f9d3a"
