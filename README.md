@@ -24,22 +24,22 @@ After loading several images or a folder, step through them with **< Prev** / **
 ### Configuring a new model
 
 1. Load a reference image, click **New**, and enter the model name.
-2. Turn on **Edit regions** and drag a box around the wire exit of each connector. Keep the box tight: it should cover the wires only, not the blue fixture. When you draw a box, the app also stores a picture of the connector body directly above it (the *anchor*), so the box can follow the connector if it sits somewhere else in later images. Draw regions on a clean reference image with the connector in its usual spot.
+2. Turn on **Edit regions** and drag a box around the wire exit of each connector. Keep the box tight: it should cover the wires only, not the blue fixture.
 3. Enter the expected colors left to right, e.g. `black, blue` or, for a 3 or 4 wire connector, `black, blue, black, red`. A color can appear more than once.
-4. Click **Save Config**.
+4. Next, the app asks for the connector: drag a tight box around the connector body (the green housing and black boot), not the wires or the fixture. This picture (the *anchor*) is how the region finds its connector anywhere in the frame. Press Esc to skip, and the region stays at a fixed position. **Set connector** redoes this for the selected region. Use a clean camera frame, not an annotated image.
+5. Click **Save Config**.
 
 ## How detection works
 
 Each region is converted to HSV and masked for each expected color (ranges are in `config.json`). Wires run vertically through the region, so the detector looks for narrow columns where the mask covers most of the region's height. Each run of such columns is split around its fill peaks, and for a color expected *n* times the *n* pieces with the highest fill are kept as wires. Partial blobs such as the black rubber boot or the foam sleeve get rejected this way. Two neighbouring wires of the same color need a visible gap or shadow between them to be counted separately. The wire centers are sorted by x and compared with `expected_order`.
 
-Before that, if a region has an anchor, the app looks for the anchor near its original position and moves the box by the same offset. If the anchor match is too weak, the region fails with *Connector not found*.
+Before that, every region's anchor is searched for over the whole frame. Connectors of the same type look alike, so the matches are assigned to regions in the order the regions were configured, left to right (or top to bottom for stacked regions), and each box moves with its connector. If a connector can't be found, its region fails with *Connector not found*. Rotated connectors, or a camera much closer or further away than in the reference image, won't match.
 
 The settings you can tune in `config.json`:
 
 - `colors.<name>.hsv_ranges`: OpenCV HSV bounds (H 0–180). Add new wire colors here.
 - `detection.min_column_fill`: fraction of the region height a column must cover to count as wire.
-- `detection.anchor_search_px`: how far (in the profile's image pixels) a connector may move from where it was configured. Keep it below the distance between neighbouring connectors, or a box may lock onto the wrong one.
-- `detection.anchor_min_score`: minimum template match (0�1) to accept the connector's new position.
+- `detection.anchor_min_score`: minimum template match (0–1) to accept the connector's new position.
 - `profiles.<model>.image_size`: the resolution the boxes were drawn at. Boxes scale automatically to other resolutions.
 
 ## Tests

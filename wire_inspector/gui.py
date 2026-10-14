@@ -37,6 +37,7 @@ class WireInspectorApp:
         self.read_failures = 0
         self.drag_start = None
         self.drag_rect = None
+        self.anchor_target = None  # region waiting for its connector box
         self.image_paths: list[Path] = []
         self.image_index = -1
 
@@ -48,6 +49,7 @@ class WireInspectorApp:
         root.protocol("WM_DELETE_WINDOW", self.on_close)
         root.bind("<Left>", lambda e: self.step_image(-1))
         root.bind("<Right>", lambda e: self.step_image(1))
+        root.bind("<Escape>", lambda e: self._cancel_anchor())
         self.refresh_cameras()
 
     # ------------------------------------------------------------------ UI
@@ -148,6 +150,7 @@ class WireInspectorApp:
         ttk.Button(btns, text="Edit order", command=self.edit_region_order).pack(side=tk.LEFT)
         ttk.Button(btns, text="Rename", command=self.rename_region).pack(side=tk.LEFT, padx=4)
         ttk.Button(btns, text="Delete", command=self.delete_region).pack(side=tk.LEFT)
+        ttk.Button(btns, text="Set connector", command=self.set_region_anchor).pack(side=tk.LEFT, padx=4)
 
         ttk.Label(side, text="Colors: " + ", ".join(self.config["colors"]),
                   foreground="#666").pack(anchor=tk.W, pady=(8, 0))
@@ -172,7 +175,8 @@ class WireInspectorApp:
         self.region_list.delete(0, tk.END)
         if self.profile:
             for r in self.profile["regions"]:
-                self.region_list.insert(tk.END, f"{r['name']}:  {' | '.join(r['expected_order'])}")
+                tag = "" if r.get("anchor") else "  (fixed position)"
+                self.region_list.insert(tk.END, f"{r['name']}:  {' | '.join(r['expected_order'])}{tag}")
         self._clear_results()
         self.redraw()
 
@@ -232,6 +236,24 @@ class WireInspectorApp:
                 region["name"] = name
                 self._on_profile_change()
 
+    def set_region_anchor(self):
+        region = self._selected_region()
+        if region and self.frame is not None:
+            self._ask_anchor(region)
+
+    def _ask_anchor(self, region):
+        self.anchor_target = region
+        self.edit_mode.set(True)
+        self.redraw()
+        self.set_status(f"Drag a tight box around the connector body of '{region['name']}' "
+                        "(housing and boot, not the wires). Esc to skip.")
+
+    def _cancel_anchor(self):
+        if self.anchor_target is not None:
+            region, self.anchor_target = self.anchor_target, None
+            how = "still follows its connector" if region.get("anchor") else "stays at a fixed position"
+            self.set_status(f"Skipped. Region '{region['name']}' {how}.")
+
     def delete_region(self):
         region = self._selected_region()
         if region and messagebox.askyesno("Delete", f"Delete region '{region['name']}'?"):
@@ -246,7 +268,8 @@ class WireInspectorApp:
         return min(max(fx, 0), w), min(max(fy, 0), h)
 
     def on_press(self, event):
-        if self.edit_mode.get() and self.frame is not None and self.profile is not None:
+        if ((self.edit_mode.get() or self.anchor_target is not None)
+                and self.frame is not None and self.profile is not None):
             self.drag_start = (event.x, event.y)
 
     def on_drag(self, event):
@@ -279,6 +302,16 @@ class WireInspectorApp:
         pw, ph = profile["image_size"]
         box = [round(x1 * pw / w), round(y1 * ph / h), round(x2 * pw / w), round(y2 * ph / h)]
 
+        if self.anchor_target is not None:
+            region, self.anchor_target = self.anchor_target, None
+            anchor = make_anchor(self.frame, box, profile["image_size"])
+            if anchor:
+                region["anchor"] = anchor
+            self._on_profile_change()
+            self.set_status(f"Connector set for '{region['name']}'. The region will follow it anywhere "
+                            "in the frame. Remember to Save Config.")
+            return
+
         name = simpledialog.askstring("New region", "Region name:",
                                       initialvalue=f"Region {len(profile['regions']) + 1}", parent=self.root)
         if not name:
@@ -289,13 +322,9 @@ class WireInspectorApp:
             self.redraw()
             return
         region = {"name": name, "box": box, "expected_order": order}
-        anchor = make_anchor(self.frame, box, profile["image_size"])
-        if anchor:
-            region["anchor"] = anchor
         profile["regions"].append(region)
         self._on_profile_change()
-        note = "" if anchor else " (no room above it for a connector anchor, so it won't follow the connector)"
-        self.set_status(f"Added region '{name}'{note}. Remember to Save Config.")
+        self._ask_anchor(region)
 
     # --------------------------------------------------------------- input
     @staticmethod
@@ -517,6 +546,9 @@ class WireInspectorApp:
                 cv2.rectangle(img, (x1, y1), (x2, y2), (0, 235, 255), 2)
                 cv2.putText(img, r["name"], (x1, max(15, y1 - 6)), cv2.FONT_HERSHEY_SIMPLEX,
                             0.5, (0, 235, 255), 1, cv2.LINE_AA)
+                if r.get("anchor"):
+                    ax1, ay1, ax2, ay2 = scale_box(r["anchor"]["box"], self.profile.get("image_size"), (w, h))
+                    cv2.rectangle(img, (ax1, ay1), (ax2, ay2), (255, 0, 255), 1)
 
         cw, ch = max(self.canvas.winfo_width(), 1), max(self.canvas.winfo_height(), 1)
         h, w = img.shape[:2]

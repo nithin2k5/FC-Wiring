@@ -114,42 +114,79 @@ def shift(frame, dx, dy):
 
 
 @pytest.mark.skipif(not SAMPLE.exists(), reason="sample image missing")
-@pytest.mark.parametrize("dx, dy", [(60, 0), (-80, 30), (40, -50)])
-def test_sample_image_connectors_moved(dx, dy):
+@pytest.mark.parametrize("dx, dy", [(60, 0), (-250, 150), (100, -250)])
+def test_sample_image_shifted(dx, dy):
     result = inspect(shift(cv2.imread(str(SAMPLE)), dx, dy), CONFIG, "FCFK2FF3")
     assert result.passed, [r.message for r in result.regions]
-    for region in result.regions:
-        assert abs(region.offset[0] - dx) <= 2 and abs(region.offset[1] - dy) <= 2
+    assert all(r.offset == (dx, dy) for r in result.regions)
 
 
-def connector_frame(dx=0, dy=0):
-    """Two wires hanging below a patterned connector body, moved by (dx, dy)."""
-    frame = np.full((300, 300, 3), 255, np.uint8)
-    x, y = 100 + dx, 120 + dy
+@pytest.mark.skipif(not SAMPLE.exists(), reason="sample image missing")
+@pytest.mark.parametrize("positions", [
+    [(40, 30), (700, 420)],
+    [(500, 520), (880, 40)],
+    [(150, 300), (420, 310)],
+])
+def test_sample_connectors_anywhere(positions):
+    """Cut each connector out of the sample and paste it elsewhere on a plain background."""
+    sample = cv2.imread(str(SAMPLE))
+    frame = cv2.GaussianBlur(
+        np.random.default_rng(0).normal(150, 25, sample.shape).clip(0, 255).astype(np.uint8), (7, 7), 0)
+    expected_offsets = []
+    for region, (px, py) in zip(CONFIG["profiles"]["FCFK2FF3"]["regions"], positions):
+        a, b = region["anchor"]["box"], region["box"]
+        x1, y1 = min(a[0], b[0]) - 12, min(a[1], b[1]) - 12
+        x2, y2 = max(a[2], b[2]) + 12, max(a[3], b[3]) + 12
+        frame[py:py + y2 - y1, px:px + x2 - x1] = sample[y1:y2, x1:x2]
+        expected_offsets.append((px - x1, py - y1))
+    result = inspect(frame, CONFIG, "FCFK2FF3")
+    assert result.passed, [r.message for r in result.regions]
+    assert [r.offset for r in result.regions] == expected_offsets
+
+
+def draw_connector(frame, x, y, left_bgr, right_bgr):
+    """A patterned connector body at (x, y) with two wires hanging below it."""
     cv2.rectangle(frame, (x, y - 70), (x + 80, y), (40, 180, 40), -1)
     cv2.circle(frame, (x + 40, y - 35), 20, (20, 20, 20), -1)
-    cv2.rectangle(frame, (x + 25, y), (x + 34, y + 90), BLACK, -1)
-    cv2.rectangle(frame, (x + 46, y), (x + 55, y + 90), BLUE, -1)
-    return frame
+    cv2.rectangle(frame, (x + 25, y), (x + 34, y + 90), left_bgr, -1)
+    cv2.rectangle(frame, (x + 46, y), (x + 55, y + 90), right_bgr, -1)
 
 
-def anchored_config():
-    box = [95, 125, 185, 205]
-    region = {"name": "R", "box": box, "expected_order": ["black", "blue"],
-              "anchor": make_anchor(connector_frame(), box, [300, 300])}
+def two_connector_config():
+    """Identical connectors; the left one is wired black|blue, the right one blue|black."""
+    ref = np.full((400, 600, 3), 255, np.uint8)
+    draw_connector(ref, 100, 150, BLACK, BLUE)
+    draw_connector(ref, 400, 150, BLUE, BLACK)
+    regions = []
+    for name, x, order in (("L", 100, ["black", "blue"]), ("R", 400, ["blue", "black"])):
+        anchor_box = [x - 5, 75, x + 85, 155]
+        regions.append({"name": name, "box": [x - 5, 155, x + 85, 235], "expected_order": order,
+                        "anchor": make_anchor(ref, anchor_box, [600, 400])})
     return {"colors": CONFIG["colors"], "detection": CONFIG["detection"],
-            "profiles": {"test": {"image_size": [300, 300], "regions": [region]}}}
+            "profiles": {"test": {"image_size": [600, 400], "regions": regions}}}
 
 
-def test_anchor_follows_moved_connector():
-    config = anchored_config()
-    assert inspect(connector_frame(), config, "test").passed
-    result = inspect(connector_frame(dx=-60, dy=45), config, "test")
-    assert result.passed, result.regions[0].message
-    assert result.regions[0].offset == (-60, 45)
+@pytest.mark.parametrize("left, right", [((100, 150), (400, 150)), ((20, 300), (480, 90)),
+                                         ((250, 100), (330, 300))])
+def test_identical_connectors_found_anywhere(left, right):
+    frame = np.full((400, 600, 3), 255, np.uint8)
+    draw_connector(frame, *left, BLACK, BLUE)
+    draw_connector(frame, *right, BLUE, BLACK)
+    result = inspect(frame, two_connector_config(), "test")
+    assert result.passed, [r.message for r in result.regions]
+    assert [r.offset for r in result.regions] == [(left[0] - 100, left[1] - 150),
+                                                  (right[0] - 400, right[1] - 150)]
 
 
-def test_anchor_without_connector_fails():
-    result = inspect(np.full((300, 300, 3), 255, np.uint8), anchored_config(), "test")
+def test_one_connector_missing():
+    frame = np.full((400, 600, 3), 255, np.uint8)
+    draw_connector(frame, 300, 200, BLACK, BLUE)
+    result = inspect(frame, two_connector_config(), "test")
     assert not result.passed
-    assert "Connector not found" in result.regions[0].message
+    assert ["Connector not found" in r.message for r in result.regions].count(True) == 1
+
+
+def test_no_connector_fails():
+    result = inspect(np.full((400, 600, 3), 255, np.uint8), two_connector_config(), "test")
+    assert not result.passed
+    assert all(r.message == "Connector not found" for r in result.regions)
