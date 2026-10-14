@@ -372,6 +372,13 @@ def draw_result(frame_bgr: np.ndarray, result: InspectionResult) -> np.ndarray:
         if region.search_box:
             sx1, sy1, sx2, sy2 = region.search_box
             cv2.rectangle(out, (sx1, sy1), (sx2, sy2), (255, 200, 0), 1)
+        if region.anchor_score is not None and not region.anchor_score:
+            # The connector wasn't found, so the wires box would only mark a
+            # stale spot. Say so on the search area (or the frame) instead.
+            ax1, ay1 = region.search_box[:2] if region.search_box else (10, 10)
+            cv2.putText(out, f"{region.name}: CONNECTOR NOT FOUND", (ax1 + 4, ay1 + 22),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2, cv2.LINE_AA)
+            continue
         x1, y1, x2, y2 = region.box
         color = (0, 200, 0) if region.passed else (0, 0, 255)
         cv2.rectangle(out, (x1, y1), (x2, y2), color, 2)

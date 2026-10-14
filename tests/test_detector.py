@@ -4,7 +4,7 @@ import cv2
 import numpy as np
 import pytest
 
-from wire_engine import inspect, load_config, make_anchor
+from wire_engine import draw_result, inspect, load_config, make_anchor
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = load_config(ROOT / "config.json")
@@ -283,3 +283,15 @@ def test_black_survives_exposure_changes(gain):
     frame = multi_wire_frame([TINTED_BLACK, BLUE]).astype(float) * gain
     result = inspect(np.clip(frame, 0, 255).astype(np.uint8), multi_wire_config(["black", "blue"]), "test")
     assert result.passed, result.regions[0].message
+
+
+def test_result_image_flags_missing_connector_instead_of_stale_box():
+    config = with_areas(two_connector_config(), [[0, 0, 300, 400], [300, 0, 600, 400]])
+    frame = np.full((400, 600, 3), 255, np.uint8)
+    draw_connector(frame, 400, 150, BLUE, BLACK)   # only R's connector is there
+    result = inspect(frame, config, "test")
+    out = draw_result(frame, result)
+    # No box drawn at L's stored wires position (95, 155)-(185, 235)...
+    assert (out[155, 95:186] == 255).all() and (out[155:236, 95] == 255).all()
+    # ...but a red "not found" label at the top of L's area.
+    assert (out[5:35, 0:300] != 255).any()
