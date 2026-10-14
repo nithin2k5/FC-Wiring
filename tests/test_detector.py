@@ -65,6 +65,7 @@ def test_sample_image():
 
 
 RED = (30, 30, 220)
+YELLOW = (20, 210, 230)
 
 
 def multi_wire_frame(wires_bgr):
@@ -86,11 +87,19 @@ def multi_wire_config(order):
     ([BLACK, BLUE, RED], ["black", "blue", "red"]),
     ([BLACK, BLUE, BLACK], ["black", "blue", "black"]),
     ([BLUE, BLACK, BLACK, RED], ["blue", "black", "black", "red"]),
+    ([YELLOW, RED], ["yellow", "red"]),
+    ([RED, YELLOW, BLACK, YELLOW], ["red", "yellow", "black", "yellow"]),
 ])
 def test_three_and_four_wires_pass(wires, order):
     result = inspect(multi_wire_frame(wires), multi_wire_config(order), "test")
     assert result.passed, result.regions[0].message
     assert result.regions[0].detected_order == order
+
+
+def test_red_and_yellow_swapped_fails():
+    result = inspect(multi_wire_frame([RED, YELLOW]), multi_wire_config(["yellow", "red"]), "test")
+    assert not result.passed
+    assert result.regions[0].detected_order == ["red", "yellow"]
 
 
 def test_repeated_color_wrong_order_fails():
