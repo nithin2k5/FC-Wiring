@@ -62,3 +62,46 @@ def test_sample_image():
         frame[y1:y2, x1:x2] = frame[y1:y2, x1:x2][:, ::-1].copy()
     result = inspect(frame, CONFIG, "FCFK2FF3")
     assert all(r.detected_order == ["blue", "black"] for r in result.regions)
+
+
+RED = (30, 30, 220)
+
+
+def multi_wire_frame(wires_bgr):
+    """White frame with evenly spaced vertical wires, left to right."""
+    frame = np.full((200, 200, 3), 255, np.uint8)
+    for i, bgr in enumerate(wires_bgr):
+        x = 60 + 22 * i
+        cv2.rectangle(frame, (x, 20), (x + 9, 180), bgr, -1)
+    return frame
+
+
+def multi_wire_config(order):
+    config = synthetic_config()
+    config["profiles"]["test"]["regions"][0]["expected_order"] = order
+    return config
+
+
+@pytest.mark.parametrize("wires, order", [
+    ([BLACK, BLUE, RED], ["black", "blue", "red"]),
+    ([BLACK, BLUE, BLACK], ["black", "blue", "black"]),
+    ([BLUE, BLACK, BLACK, RED], ["blue", "black", "black", "red"]),
+])
+def test_three_and_four_wires_pass(wires, order):
+    result = inspect(multi_wire_frame(wires), multi_wire_config(order), "test")
+    assert result.passed, result.regions[0].message
+    assert result.regions[0].detected_order == order
+
+
+def test_repeated_color_wrong_order_fails():
+    result = inspect(multi_wire_frame([BLACK, BLACK, BLUE]),
+                     multi_wire_config(["black", "blue", "black"]), "test")
+    assert not result.passed
+    assert "Wrong order" in result.regions[0].message
+
+
+def test_repeated_color_missing_wire_fails():
+    result = inspect(multi_wire_frame([BLACK, BLUE, (255, 255, 255)]),
+                     multi_wire_config(["black", "blue", "black"]), "test")
+    assert not result.passed
+    assert "black (1 of 2)" in result.regions[0].message

@@ -9,6 +9,7 @@ or foam sleeve only cover part of the height.
 from __future__ import annotations
 
 import json
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -32,7 +33,7 @@ class RegionResult:
     box: tuple[int, int, int, int]  # x1, y1, x2, y2 in frame coordinates
     expected_order: list[str]
     detected_order: list[str]
-    detections: dict[str, WireDetection] = field(default_factory=dict)
+    detections: list[WireDetection] = field(default_factory=list)  # left to right
     passed: bool = False
     message: str = ""
 
@@ -64,10 +65,17 @@ def color_mask(hsv: np.ndarray, ranges: list) -> np.ndarray:
     return mask
 
 
-def _best_column_run(fill: np.ndarray, min_fill: float, min_width: int):
-    """Return (start, end, score) of the strongest run of columns above min_fill."""
+def _column_runs(fill: np.ndarray, min_fill: float, min_width: int, count: int):
+    """Return up to `count` (start, end, score) wire runs, strongest first.
+
+    Columns above min_fill form runs. A run can merge the wire with an adjacent
+    partial blob (connector boot, shadow), or two neighbouring wires of the same
+    color, so each run is split into pieces around its fill peaks: the columns
+    within 70% of a peak form one piece. Pieces are ranked by mean fill, since
+    a wire covers most of the region height while blobs are wide but partial.
+    """
     above = fill >= min_fill
-    best = None
+    pieces = []
     x = 0
     n = len(fill)
     while x < n:
@@ -77,34 +85,35 @@ def _best_column_run(fill: np.ndarray, min_fill: float, min_width: int):
         start = x
         while x < n and above[x]:
             x += 1
-        width = x - start
-        if width >= min_width:
-            strength = float(fill[start:x].sum())
-            if best is None or strength > best[2]:
-                best = (start, x, strength)
-    if best is None:
-        return None
-    # A run can merge the wire with an adjacent partial blob (connector boot,
-    # shadow). Narrow it to the columns around the peak, which is the wire.
-    start, end, _ = best
-    peak = start + int(np.argmax(fill[start:end]))
-    floor = 0.7 * fill[peak]
-    lo, hi = peak, peak + 1
-    while lo > start and fill[lo - 1] >= floor:
-        lo -= 1
-    while hi < end and fill[hi] >= floor:
-        hi += 1
-    return lo, hi, float(fill[lo:hi].mean())
+        end = x
+        taken = np.zeros(end - start, bool)
+        while not taken.all():
+            sub = np.where(taken, -1.0, fill[start:end])
+            peak = start + int(np.argmax(sub))
+            if fill[peak] < min_fill:
+                break
+            floor = 0.7 * fill[peak]
+            lo, hi = peak, peak + 1
+            while lo > start and not taken[lo - 1 - start] and fill[lo - 1] >= floor:
+                lo -= 1
+            while hi < end and not taken[hi - start] and fill[hi] >= floor:
+                hi += 1
+            taken[lo - start:hi - start] = True
+            if hi - lo >= min_width:
+                pieces.append((lo, hi, float(fill[lo:hi].mean())))
+    pieces.sort(key=lambda p: p[2], reverse=True)
+    return pieces[:count]
 
 
-def detect_wires(region_bgr: np.ndarray, colors: dict, color_names: list[str],
-                 min_fill: float = 0.35, min_width: int = 3) -> dict[str, WireDetection]:
+def detect_wires(region_bgr: np.ndarray, colors: dict, color_counts: dict[str, int],
+                 min_fill: float = 0.35, min_width: int = 3) -> list[WireDetection]:
+    """Find up to color_counts[name] wires of each color, sorted left to right."""
     blurred = cv2.GaussianBlur(region_bgr, (5, 5), 0)
     hsv = cv2.cvtColor(blurred, cv2.COLOR_BGR2HSV)
     kernel = np.ones((3, 3), np.uint8)
 
     masks = {}
-    for name in color_names:
+    for name in color_counts:
         mask = color_mask(hsv, colors[name]["hsv_ranges"])
         masks[name] = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
 
@@ -115,19 +124,15 @@ def detect_wires(region_bgr: np.ndarray, colors: dict, color_names: list[str],
             if name != "black":
                 masks["black"] = cv2.bitwise_and(masks["black"], cv2.bitwise_not(mask))
 
-    results = {}
+    results = []
     for name, mask in masks.items():
         fill = (mask > 0).mean(axis=0)
-        run = _best_column_run(fill, min_fill, min_width)
-        if run is None:
-            results[name] = WireDetection(name, False)
-            continue
-        start, end, score = run
-        cols = np.arange(start, end)
-        weights = fill[start:end]
-        center = float((cols * weights).sum() / weights.sum())
-        results[name] = WireDetection(name, True, center, start, end, score)
-    return results
+        for start, end, score in _column_runs(fill, min_fill, min_width, color_counts[name]):
+            cols = np.arange(start, end)
+            weights = fill[start:end]
+            center = float((cols * weights).sum() / weights.sum())
+            results.append(WireDetection(name, True, center, start, end, score))
+    return sorted(results, key=lambda d: d.center_x)
 
 
 def scale_box(box, profile_size, frame_size):
@@ -162,11 +167,14 @@ def inspect(frame_bgr: np.ndarray, config: dict, profile_name: str) -> Inspectio
             continue
 
         crop = frame_bgr[y1:y2, x1:x2]
-        result.detections = detect_wires(crop, colors, list(dict.fromkeys(expected)),
-                                         min_fill, min_width)
-        found = [d for d in result.detections.values() if d.found]
-        missing = [c for c in expected if not result.detections[c].found]
-        result.detected_order = [d.color for d in sorted(found, key=lambda d: d.center_x)]
+        counts = Counter(expected)
+        result.detections = detect_wires(crop, colors, counts, min_fill, min_width)
+        result.detected_order = [d.color for d in result.detections]
+        found = Counter(result.detected_order)
+        missing = []
+        for c, n in counts.items():
+            if found[c] < n:
+                missing.append(c if n == 1 else f"{c} ({found[c]} of {n})")
 
         if missing:
             result.message = "Not detected: " + ", ".join(missing)
@@ -189,9 +197,7 @@ def draw_result(frame_bgr: np.ndarray, result: InspectionResult) -> np.ndarray:
         label = f"{region.name}: {'PASS' if region.passed else 'FAIL'}"
         cv2.putText(out, label, (x1, max(15, y1 - 8)), cv2.FONT_HERSHEY_SIMPLEX,
                     0.55, color, 2, cv2.LINE_AA)
-        found = sorted((d for d in region.detections.values() if d.found),
-                       key=lambda d: d.center_x)
-        for i, det in enumerate(found):
+        for i, det in enumerate(region.detections):
             cv2.rectangle(out, (x1 + det.x_start, y1 + 2), (x1 + det.x_end - 1, y2 - 2),
                           (0, 255, 255), 1)
             cv2.putText(out, f"{i + 1}:{det.color}", (x1 + 2, y2 + 16 + 16 * i),

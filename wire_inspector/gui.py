@@ -214,9 +214,6 @@ class WireInspectorApp:
             messagebox.showerror("Expected order", "Unknown colors: " + ", ".join(unknown) if unknown
                                  else "Enter at least one color.")
             return None
-        if len(set(order)) != len(order):
-            messagebox.showerror("Expected order", "Each color can appear only once per region.")
-            return None
         return order
 
     def edit_region_order(self):
