@@ -29,7 +29,9 @@ After loading several images or a folder, step through them with **< Prev** / **
 3. Enter the expected colors left to right, e.g. `black, blue` or, for a 3 or 4 wire connector, `black, blue, black, red`. A color can appear more than once.
 4. Next, the app asks for the connector: drag a tight box around the connector body (the green housing and black boot), not the wires or the fixture. This picture (the *anchor*) is how the region finds its connector anywhere in the frame. Press Esc to skip, and the region stays at a fixed position. To change it later, delete the region and add it again. Use a clean camera frame, not an annotated image.
 5. Then it asks for the **search area**: drag a box that holds this connector and its wires wherever they can be, and no other connector. The connector is then only looked for inside its area, which also fixes which connector is connector 1 and which is connector 2. Press Esc to skip, and the connector is looked for anywhere in the frame. **Set area** redoes this for the selected region.
-6. Repeat for each connector, then click **Save Config**.
+6. After each area, the app offers to start detection. Choose **No** to set up the next connector, then **Yes** (or untick **Edit regions**) to start. Click **Save Config** to keep the setup.
+
+Made a mistake? **Undo** (or Ctrl+Z) steps back through region changes one at a time: a wrong area, connector or wires box, a deleted region, or a changed order or name. Each region has three boxes: the yellow wires box and the pink connector box are used for detection, and the light-blue area only limits where they're searched for. Draw all three on frames from your own camera; boxes copied from another camera setup will be in the wrong place.
 
 ## How detection works
 

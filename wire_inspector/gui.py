@@ -1,6 +1,7 @@
 """Tkinter frontend for wire color / order inspection."""
 from __future__ import annotations
 
+import copy
 import csv
 import threading
 import time
@@ -42,6 +43,7 @@ class WireInspectorApp:
         # (region, "connector" | "area", chain) waiting for a drag; chain moves on to
         # the area step after the connector, when a new region is being set up.
         self.setup_step = None
+        self.undo_stack = []       # (profile name, regions, image_size) before each region edit
         self.image_paths: list[Path] = []
         self.image_index = -1
 
@@ -54,6 +56,7 @@ class WireInspectorApp:
         root.bind("<Left>", lambda e: self.step_image(-1))
         root.bind("<Right>", lambda e: self.step_image(1))
         root.bind("<Escape>", lambda e: self._cancel_step())
+        root.bind("<Control-z>", lambda e: self.undo())
         self.refresh_cameras()
 
     # ------------------------------------------------------------------ UI
@@ -75,7 +78,8 @@ class WireInspectorApp:
         ttk.Separator(toolbar, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=8)
         self.edit_mode = tk.BooleanVar(value=False)
         ttk.Checkbutton(toolbar, text="Edit regions (drag to add)", variable=self.edit_mode,
-                        command=self.redraw).pack(side=tk.LEFT)
+                        command=self._on_edit_toggle).pack(side=tk.LEFT)
+        ttk.Button(toolbar, text="Undo", command=self.undo).pack(side=tk.LEFT, padx=(6, 0))
         ttk.Button(toolbar, text="Save Config", command=self.save).pack(side=tk.LEFT, padx=6)
 
         ttk.Button(toolbar, text="INSPECT", command=self.run_inspection).pack(side=tk.RIGHT)
@@ -237,6 +241,7 @@ class WireInspectorApp:
         if region:
             order = self._ask_order(", ".join(region["expected_order"]))
             if order:
+                self._push_undo()
                 region["expected_order"] = order
                 self._on_profile_change()
 
@@ -245,6 +250,7 @@ class WireInspectorApp:
         if region:
             name = simpledialog.askstring("Rename", "Region name:", initialvalue=region["name"], parent=self.root)
             if name:
+                self._push_undo()
                 region["name"] = name
                 self._on_profile_change()
 
@@ -280,9 +286,52 @@ class WireInspectorApp:
             how = "stays at a fixed position"
         self.set_status(f"Skipped. Region '{region['name']}' {how}.")
 
+    def _push_undo(self):
+        profile = self.profile
+        self.undo_stack.append((self.profile_var.get(), copy.deepcopy(profile["regions"]),
+                                copy.deepcopy(profile.get("image_size"))))
+        del self.undo_stack[:-30]
+
+    def undo(self):
+        if isinstance(self.root.focus_get(), (tk.Entry, ttk.Entry)):
+            return
+        self.setup_step = None
+        if not self.undo_stack:
+            self.set_status("Nothing to undo.")
+            self.redraw()
+            return
+        name, regions, size = self.undo_stack.pop()
+        profile = self.config["profiles"].get(name)
+        if profile is None:
+            self.set_status(f"Can't undo: profile '{name}' no longer exists.")
+            return
+        profile["regions"], profile["image_size"] = regions, size
+        if self.profile_var.get() != name:
+            self.profile_var.set(name)
+        self._on_profile_change()
+        self.set_status("Undone. Remember to Save Config.")
+
+    def _on_edit_toggle(self):
+        if self.edit_mode.get():
+            self.redraw()
+        else:
+            self.setup_step = None
+            self.run_inspection(quiet=True)
+
+    def start_detection(self):
+        """Leave edit mode and inspect: live if the camera runs, else the current image."""
+        self.setup_step = None
+        self.edit_mode.set(False)
+        if self.capture is not None:
+            self.live_inspect.set(True)
+            self.set_status("Detection running on the live camera.")
+        else:
+            self.run_inspection(quiet=True)
+
     def delete_region(self):
         region = self._selected_region()
         if region and messagebox.askyesno("Delete", f"Delete region '{region['name']}'?"):
+            self._push_undo()
             self.profile["regions"].remove(region)
             self._on_profile_change()
 
@@ -334,6 +383,7 @@ class WireInspectorApp:
             if kind == "connector":
                 anchor = make_anchor(self.frame, box, profile["image_size"])
                 if anchor:
+                    self._push_undo()
                     region["anchor"] = anchor
                 self._on_profile_change()
                 if chain:
@@ -341,6 +391,7 @@ class WireInspectorApp:
                     return
                 self.set_status(f"Connector set for '{region['name']}'. Remember to Save Config.")
             else:
+                self._push_undo()
                 region["search_box"] = box
                 self._on_profile_change()
                 inside = all(self._contains(box, b) for b in
@@ -348,6 +399,10 @@ class WireInspectorApp:
                 note = "" if inside else (" Note: the area doesn't fully contain the wires and connector "
                                           "boxes, so they may be cut off.")
                 self.set_status(f"Search area set for '{region['name']}'.{note} Remember to Save Config.")
+                if messagebox.askyesno("Start detection",
+                                       f"Search area set for '{region['name']}'.{note}\n\nStart detection now?\n"
+                                       "Choose No to set up another connector first.", parent=self.root):
+                    self.start_detection()
             return
 
         name = simpledialog.askstring("New region", "Region name:",
@@ -360,6 +415,7 @@ class WireInspectorApp:
             self.redraw()
             return
         region = {"name": name, "box": box, "expected_order": order}
+        self._push_undo()
         profile["regions"].append(region)
         self._on_profile_change()
         self._ask_step(region, "connector", chain=True)
