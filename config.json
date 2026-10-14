@@ -107,7 +107,7 @@
     "anchor_min_score": 0.5,
     "colored_min_saturation": 110,
     "colored_min_chroma": 40,
-    "wire_search_min_fill": 0.6
+    "max_wire_width_ratio": 2.5
   },
   "profiles": {
     "FCFK2FF3": {

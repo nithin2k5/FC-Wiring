@@ -14,9 +14,11 @@ from .detector import (
     load_config,
     locate_regions,
     make_anchor,
+    matches_signature,
     save_config,
     scale_box,
     search_area,
+    wire_signature,
 )
 
 __all__ = [
@@ -30,7 +32,9 @@ __all__ = [
     "load_config",
     "locate_regions",
     "make_anchor",
+    "matches_signature",
     "save_config",
     "scale_box",
     "search_area",
+    "wire_signature",
 ]

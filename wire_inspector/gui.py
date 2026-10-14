@@ -14,7 +14,8 @@ import numpy as np
 from PIL import Image, ImageTk
 
 from .camera import RESOLUTIONS, list_cameras, open_camera
-from wire_engine import draw_result, inspect, load_config, make_anchor, save_config, scale_box
+from wire_engine import (draw_result, inspect, load_config, make_anchor, save_config, scale_box,
+                         wire_signature)
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
 PASS_BG = "#1f9d3a"
@@ -243,6 +244,7 @@ class WireInspectorApp:
             if order:
                 self._push_undo()
                 region["expected_order"] = order
+                self._record_signature(region)
                 self._on_profile_change()
 
     def rename_region(self):
@@ -417,8 +419,32 @@ class WireInspectorApp:
         region = {"name": name, "box": box, "expected_order": order}
         self._push_undo()
         profile["regions"].append(region)
+        self._record_signature(region)
         self._on_profile_change()
         self._ask_step(region, "connector", chain=True)
+
+    def _record_signature(self, region):
+        """Learn the widths and spacing of the region's wires from the current frame.
+
+        The area search uses them to tell this connector's wires from a fixture
+        or plate of the same colors, e.g. for a part without its rubber boot.
+        """
+        signature = None
+        if self.frame is not None:
+            signature = wire_signature(self.frame, region["box"], self.profile.get("image_size"),
+                                       self.config["colors"], region["expected_order"],
+                                       self.config.get("detection"))
+        if signature:
+            region["wire_signature"] = signature
+            return
+        region.pop("wire_signature", None)
+        messagebox.showwarning(
+            "Wires box",
+            f"The wires box of '{region['name']}' doesn't show exactly "
+            f"{' | '.join(region['expected_order'])} in this image.\n\n"
+            "The region still works when its connector is found, but it can't search its area for "
+            "the wires (needed e.g. for parts without the rubber boot). Draw the wires box tightly over "
+            "the wires, on an image of a correctly wired part.", parent=self.root)
 
     @staticmethod
     def _contains(outer, inner):

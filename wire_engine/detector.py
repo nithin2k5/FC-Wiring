@@ -20,6 +20,9 @@ without its rubber boot). So in a region with a search area, if the connector
 isn't found or the wires box it gives doesn't hold the expected wires, the
 wires box is also slid over the whole area to where the expected colors run
 through it, and whichever placement finds more of the expected wires is used.
+Because a fixture or plate in the area can look like a wire of the right color,
+wires found this way must match the region's wire signature: the widths and
+spacing of its wires, recorded when the wires box was drawn.
 """
 from __future__ import annotations
 
@@ -168,13 +171,31 @@ def wire_masks(region_bgr: np.ndarray, colors: dict, names, min_sat: int = 110,
 
 def detect_wires(region_bgr: np.ndarray, colors: dict, color_counts: dict[str, int],
                  min_fill: float = 0.35, min_width: int = 3,
-                 min_sat: int = 110, min_chroma: int = 40) -> list[WireDetection]:
-    """Find up to color_counts[name] wires of each color, sorted left to right."""
+                 min_sat: int = 110, min_chroma: int = 40,
+                 max_width_ratio: float = 2.5) -> list[WireDetection]:
+    """Find up to color_counts[name] wires of each color, sorted left to right.
+
+    Foam sleeves, rubber boots and fixtures can be as dark or as colored as a
+    wire, but they are much wider. So a piece is not taken as a wire if it is
+    wider than the box can hold side by side (box width / number of wires), or
+    more than max_width_ratio times wider than the other colors' wires.
+    """
     masks = wire_masks(region_bgr, colors, color_counts, min_sat, min_chroma)
+    fills = {name: (mask > 0).mean(axis=0) for name, mask in masks.items()}
+    # A couple of spare candidates per color, in case the best one is a blob.
+    widest = region_bgr.shape[1] / max(1, sum(color_counts.values()))
+    runs = {name: [piece for piece in _column_runs(fills[name], min_fill, min_width, color_counts[name] + 2)
+                   if piece[1] - piece[0] <= widest]
+            for name in masks}
     results = []
-    for name, mask in masks.items():
-        fill = (mask > 0).mean(axis=0)
-        for start, end, score in _column_runs(fill, min_fill, min_width, color_counts[name]):
+    for name, fill in fills.items():
+        others = [e - s for other, pieces in runs.items() if other != name
+                  for s, e, _ in pieces[:color_counts[other]]]
+        pieces = runs[name]
+        if others:
+            limit = max_width_ratio * float(np.median(others))
+            pieces = [piece for piece in pieces if piece[1] - piece[0] <= limit]
+        for start, end, score in pieces[:color_counts[name]]:
             cols = np.arange(start, end)
             weights = fill[start:end]
             center = float((cols * weights).sum() / weights.sum())
@@ -184,27 +205,32 @@ def detect_wires(region_bgr: np.ndarray, colors: dict, color_counts: dict[str, i
 
 def find_wires_box(area_bgr: np.ndarray, colors: dict, names, box_w: int, box_h: int,
                    min_fill: float = 0.35, min_sat: int = 110,
-                   min_chroma: int = 40) -> tuple[int, int, int, int] | None:
+                   min_chroma: int = 40, max_boxes: int = 6) -> list[tuple[int, int, int, int]]:
     """Where in area_bgr a box_w x box_h wires box best holds wires of all the colors.
 
     Every box position is scored by, for each color, the best fill of a column
     inside the box (how much of the box height that color covers). Positions
     that hold all the wires form a plateau of top scores; the box is put at
     its center so the wires sit in the middle. If no position holds every
-    color, the one holding the most is used, so a missing wire is reported as
-    missing. Returns (x1, y1, x2, y2) in area coordinates, or None if no wire
-    of any of the colors is in the area.
+    color, the ones holding the most are used, so a missing wire is reported
+    as missing. Returns up to max_boxes candidate (x1, y1, x2, y2) boxes in area
+    coordinates, best first; empty if no wire of any of the colors is there.
     """
     ah, aw = area_bgr.shape[:2]
     box_w, box_h = min(box_w, aw), min(box_h, ah)
     if box_w < 3 or box_h < 3:
-        return None
+        return []
     masks = wire_masks(area_bgr, colors, names, min_sat, min_chroma)
     score = np.zeros((ah - box_h + 1, aw - box_w + 1), np.float32)
     weakest = np.full_like(score, np.inf)
+    # A wire is a narrow ridge: its column is filled but at least one side,
+    # half a wire slot away, is not. A fixture or plate is filled on both sides.
+    gap = max(3, box_w // (2 * max(1, len(names))))
     for mask in masks.values():
         cum = np.vstack([np.zeros((1, aw), np.float32), np.cumsum(mask > 0, axis=0, dtype=np.float32)])
         fill = (cum[box_h:] - cum[:-box_h]) / box_h               # column fill for each box top
+        padded = np.pad(fill, ((0, 0), (gap, gap)))
+        fill = np.maximum(fill - np.minimum(padded[:, :-2 * gap], padded[:, 2 * gap:]), 0)
         # Best column within each box: a sliding max over box_w columns.
         best = cv2.dilate(fill, np.ones((1, box_w), np.uint8), anchor=(0, 0))[:, :aw - box_w + 1]
         score += best
@@ -212,15 +238,61 @@ def find_wires_box(area_bgr: np.ndarray, colors: dict, names, box_w: int, box_h:
     complete = weakest >= min_fill
     if complete.any():
         score[~complete] = 0                                       # prefer boxes with every color
-    top = float(score.max())
-    if top < min_fill:
+    boxes = []
+    for _ in range(max_boxes):
+        top = float(score.max())
+        if top < min_fill:
+            break
+        plateau = (score >= top - 0.05 * len(masks)).astype(np.uint8)
+        _, labels = cv2.connectedComponents(plateau)
+        by, bx = np.unravel_index(int(np.argmax(score)), score.shape)
+        ys, xs = np.nonzero(labels == labels[by, bx])
+        x, y = int(round(xs.mean())), int(round(ys.mean()))
+        boxes.append((x, y, x + box_w, y + box_h))
+        score[max(0, ys.min() - box_h // 2):ys.max() + box_h // 2 + 1,
+              max(0, xs.min() - box_w // 2):xs.max() + box_w // 2 + 1] = 0
+    return boxes
+
+
+def wire_signature(frame_bgr: np.ndarray, box, image_size, colors: dict, order: list[str],
+                   detection: dict | None = None) -> dict | None:
+    """Widths and centers of the wires in box (image_size coordinates), left to right.
+
+    Taken when the wires box is drawn, so the area search can tell this
+    connector's wires from other things of the same colors. None if the box
+    doesn't show exactly the expected wires in the expected order.
+    """
+    det = detection or {}
+    h, w = frame_bgr.shape[:2]
+    x1, y1, x2, y2 = scale_box(box, image_size, (w, h))
+    x1, x2 = sorted((max(0, x1), min(w, x2)))
+    y1, y2 = sorted((max(0, y1), min(h, y2)))
+    if x2 - x1 < 3 or y2 - y1 < 3:
         return None
-    plateau = (score >= top - 0.05 * len(masks)).astype(np.uint8)
-    _, labels = cv2.connectedComponents(plateau)
-    by, bx = np.unravel_index(int(np.argmax(score)), score.shape)
-    ys, xs = np.nonzero(labels == labels[by, bx])
-    x, y = int(round(xs.mean())), int(round(ys.mean()))
-    return x, y, x + box_w, y + box_h
+    dets = detect_wires(frame_bgr[y1:y2, x1:x2], colors, Counter(order),
+                        det.get("min_column_fill", 0.35), det.get("min_wire_width_px", 3),
+                        det.get("colored_min_saturation", 110), det.get("colored_min_chroma", 40),
+                        det.get("max_wire_width_ratio", 2.5))
+    if [d.color for d in dets] != list(order):
+        return None
+    sx = image_size[0] / w if image_size else 1.0
+    return {"widths": [round((d.x_end - d.x_start) * sx, 1) for d in dets],
+            "centers": [round(d.center_x * sx, 1) for d in dets]}
+
+
+def matches_signature(dets: list[WireDetection], signature: dict, scale_x: float) -> bool:
+    """Do the wires found look like the region's wires (width and spacing)?"""
+    ref_w = float(np.median(signature["widths"])) * scale_x
+    for d in dets:
+        if not 0.5 * ref_w <= d.x_end - d.x_start <= 2.0 * ref_w:
+            return False
+    centers = signature["centers"]
+    if len(dets) == len(centers) >= 2:
+        span = dets[-1].center_x - dets[0].center_x
+        ref_span = (centers[-1] - centers[0]) * scale_x
+        if not 0.6 * ref_span <= span <= 1.6 * ref_span:
+            return False
+    return True
 
 
 def scale_box(box, profile_size, frame_size):
@@ -373,10 +445,7 @@ def inspect(frame_bgr: np.ndarray, config: dict, profile_name: str) -> Inspectio
     min_anchor = det_cfg.get("anchor_min_score", 0.5)
     min_sat = det_cfg.get("colored_min_saturation", 110)
     min_chroma = det_cfg.get("colored_min_chroma", 40)
-    # Stricter fill for wires found by searching the area: a real wire runs
-    # through the whole box, while foam or a boot next to a wire end only
-    # fills part of it, so this keeps them from passing for a missing wire.
-    search_fill = max(min_fill, det_cfg.get("wire_search_min_fill", 0.6))
+    max_width_ratio = det_cfg.get("max_wire_width_ratio", 2.5)
 
     h, w = frame_bgr.shape[:2]
     located = locate_regions(frame_bgr, profile["regions"], profile.get("image_size"), min_anchor)
@@ -390,14 +459,14 @@ def inspect(frame_bgr: np.ndarray, config: dict, profile_name: str) -> Inspectio
         area = search_area(region, profile.get("image_size"), (w, h))
         bx1, by1, bx2, by2 = area or (0, 0, w, h)
 
-        def check(box, fill=min_fill):
+        def check(box):
             """Clip box to the area and detect the wires in it: (box, detections, wires found)."""
             cx1, cx2 = sorted((max(bx1, box[0]), min(bx2, box[2])))
             cy1, cy2 = sorted((max(by1, box[1]), min(by2, box[3])))
             if cx2 - cx1 < 2 or cy2 - cy1 < 2:
                 return (cx1, cy1, cx2, cy2), [], -1
-            dets = detect_wires(frame_bgr[cy1:cy2, cx1:cx2], colors, counts, fill, min_width,
-                                min_sat, min_chroma)
+            dets = detect_wires(frame_bgr[cy1:cy2, cx1:cx2], colors, counts, min_fill, min_width,
+                                min_sat, min_chroma, max_width_ratio)
             found = Counter(d.color for d in dets)
             return (cx1, cy1, cx2, cy2), dets, sum(min(found[c], n) for c, n in counts.items())
 
@@ -408,14 +477,20 @@ def inspect(frame_bgr: np.ndarray, config: dict, profile_name: str) -> Inspectio
             placed = (*check((x1 + offset[0], y1 + offset[1], x2 + offset[0], y2 + offset[1])), "connector")
         # In a search area, also look for the wires themselves when the
         # connector wasn't found or its box doesn't hold every expected wire.
-        if area and (placed is None or placed[2] < len(expected)):
-            found_box = find_wires_box(frame_bgr[by1:by2, bx1:bx2], colors, counts, box_w, box_h,
-                                       search_fill, min_sat, min_chroma)
-            if found_box:
-                fx1, fy1, fx2, fy2 = found_box
-                alt = (*check((bx1 + fx1, by1 + fy1, bx1 + fx2, by1 + fy2), search_fill), "wires")
+        # Only wires that match the region's signature count, so a fixture or
+        # plate of the same colors can't pass for them.
+        signature = region.get("wire_signature")
+        if area and signature and (placed is None or placed[2] < len(expected)):
+            scale_x = w / profile["image_size"][0] if profile.get("image_size") else 1.0
+            for fx1, fy1, fx2, fy2 in find_wires_box(frame_bgr[by1:by2, bx1:bx2], colors, counts,
+                                                     box_w, box_h, min_fill, min_sat, min_chroma):
+                alt = (*check((bx1 + fx1, by1 + fy1, bx1 + fx2, by1 + fy2)), "wires")
+                if not alt[1] or not matches_signature(alt[1], signature, scale_x):
+                    continue
                 if placed is None or alt[2] > placed[2]:
                     placed = alt
+                if placed[2] == len(expected):
+                    break
 
         if placed is None:
             result = RegionResult(region["name"], (x1, y1, x2, y2), expected, [], offset=offset,

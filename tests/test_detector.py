@@ -4,7 +4,7 @@ import cv2
 import numpy as np
 import pytest
 
-from wire_engine import draw_result, inspect, load_config, locate_regions, make_anchor
+from wire_engine import draw_result, inspect, load_config, locate_regions, make_anchor, wire_signature
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = load_config(ROOT / "config.json")
@@ -169,8 +169,11 @@ def two_connector_config():
     regions = []
     for name, x, order in (("L", 100, ["black", "blue"]), ("R", 400, ["blue", "black"])):
         anchor_box = [x - 5, 75, x + 85, 155]
-        regions.append({"name": name, "box": [x - 5, 155, x + 85, 235], "expected_order": order,
-                        "anchor": make_anchor(ref, anchor_box, [600, 400])})
+        box = [x - 5, 155, x + 85, 235]
+        regions.append({"name": name, "box": box, "expected_order": order,
+                        "anchor": make_anchor(ref, anchor_box, [600, 400]),
+                        "wire_signature": wire_signature(ref, box, [600, 400], CONFIG["colors"], order,
+                                                         CONFIG["detection"])})
     return {"colors": CONFIG["colors"], "detection": CONFIG["detection"],
             "profiles": {"test": {"image_size": [600, 400], "regions": regions}}}
 
@@ -375,3 +378,29 @@ def test_foam_below_wires_does_not_pass_for_missing_black():
     result = inspect(frame, config, "test")
     assert not result.regions[0].passed
     assert "black" in result.regions[0].message
+
+
+def test_signature_recorded_from_setup_frame():
+    region = two_connector_config()["profiles"]["test"]["regions"][0]
+    assert region["wire_signature"] == {"widths": [10.0, 10.0], "centers": [34.5, 55.5]}
+
+
+def test_fixture_in_area_does_not_pass_for_wires():
+    # Real wires missing; the area also holds a blue bar and a dark block, like
+    # the blue fixture and black plate above a real connector. They are blue
+    # and black, but far too wide for this connector's wires.
+    config = with_areas(two_connector_config(), AREAS)
+    frame = bootless_frame(((255, 255, 255), (255, 255, 255)), (BLUE, BLACK))
+    cv2.rectangle(frame, (20, 20), (75, 100), BLUE, -1)
+    cv2.rectangle(frame, (78, 20), (110, 100), BLACK, -1)
+    result = inspect(frame, config, "test")
+    assert not result.regions[0].passed
+    assert result.regions[1].passed
+
+
+def test_no_wire_search_without_signature():
+    config = with_areas(two_connector_config(), AREAS)
+    for region in config["profiles"]["test"]["regions"]:
+        del region["wire_signature"]
+    result = inspect(bootless_frame((BLACK, BLUE), (BLUE, BLACK)), config, "test")
+    assert all(r.message == "Connector and wires not found in its area" for r in result.regions)
