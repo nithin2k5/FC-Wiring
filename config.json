@@ -1,0 +1,34 @@
+{
+  "colors": {
+    "black": {
+      "display": "#000000",
+      "hsv_ranges": [[[0, 0, 0], [180, 255, 70]]]
+    },
+    "blue": {
+      "display": "#1e64ff",
+      "hsv_ranges": [[[95, 80, 40], [130, 255, 255]]]
+    },
+    "red": {
+      "display": "#e02020",
+      "hsv_ranges": [[[0, 100, 60], [10, 255, 255]], [[170, 100, 60], [180, 255, 255]]]
+    },
+    "white": {
+      "display": "#ffffff",
+      "hsv_ranges": [[[0, 0, 190], [180, 40, 255]]]
+    }
+  },
+  "detection": {
+    "min_column_fill": 0.35,
+    "min_wire_width_px": 3
+  },
+  "profiles": {
+    "FCFK2FF3": {
+      "description": "Two connectors, black wire left, blue wire right",
+      "image_size": [1118, 758],
+      "regions": [
+        {"name": "Left connector", "box": [290, 440, 450, 532], "expected_order": ["black", "blue"]},
+        {"name": "Right connector", "box": [800, 407, 962, 521], "expected_order": ["black", "blue"]}
+      ]
+    }
+  }
+}
