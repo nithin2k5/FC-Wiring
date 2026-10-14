@@ -368,6 +368,7 @@ def inspect(frame_bgr: np.ndarray, config: dict, profile_name: str) -> Inspectio
 
 def draw_result(frame_bgr: np.ndarray, result: InspectionResult) -> np.ndarray:
     out = frame_bgr.copy()
+    unplaced = 0  # "not found" labels without an area, stacked in the top-left corner
     for region in result.regions:
         if region.search_box:
             sx1, sy1, sx2, sy2 = region.search_box
@@ -375,9 +376,15 @@ def draw_result(frame_bgr: np.ndarray, result: InspectionResult) -> np.ndarray:
         if region.anchor_score is not None and not region.anchor_score:
             # The connector wasn't found, so the wires box would only mark a
             # stale spot. Say so on the search area (or the frame) instead.
-            ax1, ay1 = region.search_box[:2] if region.search_box else (10, 10)
-            cv2.putText(out, f"{region.name}: CONNECTOR NOT FOUND", (ax1 + 4, ay1 + 22),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2, cv2.LINE_AA)
+            if region.search_box:
+                pos = (region.search_box[0] + 4, region.search_box[1] + 22)
+            else:
+                pos = (10, 28 + 26 * unplaced)
+                unplaced += 1
+            label = f"{region.name}: CONNECTOR NOT FOUND"
+            # Dark outline so the label reads on any background.
+            cv2.putText(out, label, pos, cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 4, cv2.LINE_AA)
+            cv2.putText(out, label, pos, cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2, cv2.LINE_AA)
             continue
         x1, y1, x2, y2 = region.box
         color = (0, 200, 0) if region.passed else (0, 0, 255)

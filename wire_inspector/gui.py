@@ -669,6 +669,12 @@ class WireInspectorApp:
         self.detail.config(text="\n".join(f"{r.name}: {r.message}" for r in result.regions))
         self.verdict.config(text="PASS" if result.passed else "FAIL",
                             bg=PASS_BG if result.passed else FAIL_BG)
+        lost = [r for r in result.regions if r.message.startswith("Connector not found")]
+        if lost and self.capture is None:
+            names = ", ".join(r.name for r in lost)
+            self.set_status(f"Connector not found for {names}. Profile '{result.profile}' was set up on a "
+                            "different part or camera view: pick the right profile, or click New and set "
+                            "this part up on this image.")
 
     def save_result(self):
         if self.display is None:
