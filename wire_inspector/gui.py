@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import csv
 import threading
+import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
@@ -27,6 +28,7 @@ class WireInspectorApp:
         self.config = load_config(config_path)
 
         self.frame = None          # current BGR frame
+        self.raw_frame = None      # latest camera frame before flipping
         self.display = None        # BGR image currently shown (with overlay)
         self.photo = None          # keeps the Tk image alive
         self.scale = 1.0           # display px per frame px
@@ -94,6 +96,8 @@ class WireInspectorApp:
         res_box.bind("<<ComboboxSelected>>", lambda e: self._restart_camera_if_running())
         self.cam_btn = ttk.Button(cambar, text="Start Camera", command=self.toggle_camera, state=tk.DISABLED)
         self.cam_btn.pack(side=tk.LEFT, padx=(10, 0))
+        self.capture_btn = ttk.Button(cambar, text="Capture", command=self.capture_frame, state=tk.DISABLED)
+        self.capture_btn.pack(side=tk.LEFT, padx=(4, 0))
         self.live_inspect = tk.BooleanVar(value=True)
         ttk.Checkbutton(cambar, text="Live inspect", variable=self.live_inspect).pack(side=tk.LEFT, padx=6)
         self.flip_vertical = tk.BooleanVar(value=self.config.get("flip_vertical", False))
@@ -471,6 +475,7 @@ class WireInspectorApp:
         self.camera_session += 1
         self.read_failures = 0
         self.cam_btn.config(text="Stop Camera")
+        self.capture_btn.config(state=tk.NORMAL)
         w, h = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         self.cam_info.config(text=f"Live {w}x{h}")
         self.set_status(f"{cam.name} running at {w}x{h}.")
@@ -481,6 +486,7 @@ class WireInspectorApp:
             self.capture.release()
             self.capture = None
             self.cam_btn.config(text="Start Camera")
+            self.capture_btn.config(state=tk.DISABLED)
             self.cam_info.config(text="")
             self.set_status("Camera stopped. Last frame kept.")
 
@@ -496,6 +502,7 @@ class WireInspectorApp:
                 return
         else:
             self.read_failures = 0
+            self.raw_frame = frame
             self.frame = self._orient(frame)
             if self.live_inspect.get() and not self.edit_mode.get():
                 self.run_inspection(quiet=True)
@@ -503,6 +510,31 @@ class WireInspectorApp:
                 self.display = self.frame
                 self.redraw()
         self.root.after(60, self._camera_loop, session)
+
+    def capture_frame(self):
+        """Freeze the current camera frame, save it to captures/ and inspect it."""
+        if self.capture is None or self.raw_frame is None:
+            return
+        raw = self.raw_frame
+        self.stop_camera()
+        folder = self.config_path.parent / "captures"
+        name = f"{self.profile_var.get() or 'capture'}_{time.strftime('%Y%m%d_%H%M%S')}.png"
+        path = folder / name
+        try:
+            folder.mkdir(exist_ok=True)
+            ok, png = cv2.imencode(".png", raw)
+            if not ok:
+                raise OSError("could not encode image")
+            png.tofile(str(path))  # cv2.imwrite can't handle non-ASCII paths on Windows
+        except OSError as e:
+            # Still inspect the frame even if it couldn't be saved.
+            self.frame = self._orient(raw)
+            self.run_inspection()
+            self.set_status(f"Captured frame inspected, but saving it failed: {e}")
+            return
+        self.image_paths.append(path)
+        self.show_image(len(self.image_paths) - 1)
+        self.set_status(f"Captured {path}. Press Start Camera to go live again.")
 
     # ----------------------------------------------------------- inspection
     def run_inspection(self, quiet=False):
