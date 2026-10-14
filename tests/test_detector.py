@@ -4,7 +4,7 @@ import cv2
 import numpy as np
 import pytest
 
-from wire_inspector.detector import inspect, load_config
+from wire_inspector.detector import inspect, load_config, make_anchor
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = load_config(ROOT / "config.json")
@@ -105,3 +105,51 @@ def test_repeated_color_missing_wire_fails():
                      multi_wire_config(["black", "blue", "black"]), "test")
     assert not result.passed
     assert "black (1 of 2)" in result.regions[0].message
+
+
+def shift(frame, dx, dy):
+    m = np.float32([[1, 0, dx], [0, 1, dy]])
+    return cv2.warpAffine(frame, m, (frame.shape[1], frame.shape[0]),
+                          borderMode=cv2.BORDER_CONSTANT, borderValue=(255, 255, 255))
+
+
+@pytest.mark.skipif(not SAMPLE.exists(), reason="sample image missing")
+@pytest.mark.parametrize("dx, dy", [(60, 0), (-80, 30), (40, -50)])
+def test_sample_image_connectors_moved(dx, dy):
+    result = inspect(shift(cv2.imread(str(SAMPLE)), dx, dy), CONFIG, "FCFK2FF3")
+    assert result.passed, [r.message for r in result.regions]
+    for region in result.regions:
+        assert abs(region.offset[0] - dx) <= 2 and abs(region.offset[1] - dy) <= 2
+
+
+def connector_frame(dx=0, dy=0):
+    """Two wires hanging below a patterned connector body, moved by (dx, dy)."""
+    frame = np.full((300, 300, 3), 255, np.uint8)
+    x, y = 100 + dx, 120 + dy
+    cv2.rectangle(frame, (x, y - 70), (x + 80, y), (40, 180, 40), -1)
+    cv2.circle(frame, (x + 40, y - 35), 20, (20, 20, 20), -1)
+    cv2.rectangle(frame, (x + 25, y), (x + 34, y + 90), BLACK, -1)
+    cv2.rectangle(frame, (x + 46, y), (x + 55, y + 90), BLUE, -1)
+    return frame
+
+
+def anchored_config():
+    box = [95, 125, 185, 205]
+    region = {"name": "R", "box": box, "expected_order": ["black", "blue"],
+              "anchor": make_anchor(connector_frame(), box, [300, 300])}
+    return {"colors": CONFIG["colors"], "detection": CONFIG["detection"],
+            "profiles": {"test": {"image_size": [300, 300], "regions": [region]}}}
+
+
+def test_anchor_follows_moved_connector():
+    config = anchored_config()
+    assert inspect(connector_frame(), config, "test").passed
+    result = inspect(connector_frame(dx=-60, dy=45), config, "test")
+    assert result.passed, result.regions[0].message
+    assert result.regions[0].offset == (-60, 45)
+
+
+def test_anchor_without_connector_fails():
+    result = inspect(np.full((300, 300, 3), 255, np.uint8), anchored_config(), "test")
+    assert not result.passed
+    assert "Connector not found" in result.regions[0].message

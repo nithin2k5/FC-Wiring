@@ -5,9 +5,15 @@ every expected color a mask is built, and the per-column fill ratio is used to
 locate the wire: wires run vertically through the region, so they produce
 narrow columns with a high fill ratio, while blobs such as the connector boot
 or foam sleeve only cover part of the height.
+
+Connectors don't always sit at the same spot, so a region can carry an anchor:
+a picture of the connector body just above the box, taken from the reference
+image. At inspection the anchor is template-matched near its original
+position and the box is shifted by the same offset.
 """
 from __future__ import annotations
 
+import base64
 import json
 from collections import Counter
 from dataclasses import dataclass, field
@@ -36,6 +42,8 @@ class RegionResult:
     detections: list[WireDetection] = field(default_factory=list)  # left to right
     passed: bool = False
     message: str = ""
+    offset: tuple[int, int] = (0, 0)  # shift found by the anchor, frame px
+    anchor_score: float | None = None  # None if the region has no anchor
 
 
 @dataclass
@@ -145,22 +153,84 @@ def scale_box(box, profile_size, frame_size):
     return int(x1 * sx), int(y1 * sy), int(x2 * sx), int(y2 * sy)
 
 
+def anchor_box_for(box):
+    """The strip directly above box, as tall as box: the connector body."""
+    x1, y1, x2, y2 = box
+    return [x1, max(0, y1 - (y2 - y1)), x2, y1]
+
+
+def make_anchor(frame_bgr: np.ndarray, box, image_size) -> dict | None:
+    """Capture the anchor for a box given in image_size (w, h) coordinates."""
+    h, w = frame_bgr.shape[:2]
+    abox = anchor_box_for(box)
+    x1, y1, x2, y2 = scale_box(abox, image_size, (w, h))
+    if x2 - x1 < 8 or y2 - y1 < 8:
+        return None
+    ok, png = cv2.imencode(".png", frame_bgr[y1:y2, x1:x2])
+    return {"box": abox, "png": base64.b64encode(png.tobytes()).decode("ascii")} if ok else None
+
+
+_anchor_cache: dict[str, np.ndarray] = {}
+
+
+def _anchor_image(anchor: dict) -> np.ndarray:
+    key = anchor["png"]
+    if key not in _anchor_cache:
+        data = np.frombuffer(base64.b64decode(key), np.uint8)
+        _anchor_cache[key] = cv2.imdecode(data, cv2.IMREAD_COLOR)
+    return _anchor_cache[key]
+
+
+def locate_anchor(frame_bgr: np.ndarray, anchor: dict, image_size, search_px: int):
+    """Return ((dx, dy), score) of the anchor's best match near its original spot."""
+    h, w = frame_bgr.shape[:2]
+    ax1, ay1, ax2, ay2 = scale_box(anchor["box"], image_size, (w, h))
+    template = _anchor_image(anchor)
+    tw, th = ax2 - ax1, ay2 - ay1
+    if template.shape[:2] != (th, tw):
+        template = cv2.resize(template, (tw, th), interpolation=cv2.INTER_AREA)
+    mx = my = search_px
+    if image_size:
+        mx, my = int(search_px * w / image_size[0]), int(search_px * h / image_size[1])
+    sx1, sy1 = max(0, ax1 - mx), max(0, ay1 - my)
+    sx2, sy2 = min(w, ax2 + mx), min(h, ay2 + my)
+    if sx2 - sx1 < tw or sy2 - sy1 < th:
+        return (0, 0), 0.0
+    scores = cv2.matchTemplate(frame_bgr[sy1:sy2, sx1:sx2], template, cv2.TM_CCOEFF_NORMED)
+    _, best, _, (bx, by) = cv2.minMaxLoc(scores)
+    return (sx1 + bx - ax1, sy1 + by - ay1), float(best)
+
+
 def inspect(frame_bgr: np.ndarray, config: dict, profile_name: str) -> InspectionResult:
     profile = config["profiles"][profile_name]
     colors = config["colors"]
     det_cfg = config.get("detection", {})
     min_fill = det_cfg.get("min_column_fill", 0.35)
     min_width = det_cfg.get("min_wire_width_px", 3)
+    search_px = det_cfg.get("anchor_search_px", 150)
+    min_anchor = det_cfg.get("anchor_min_score", 0.5)
 
     h, w = frame_bgr.shape[:2]
     regions = []
     for region in profile["regions"]:
         x1, y1, x2, y2 = scale_box(region["box"], profile.get("image_size"), (w, h))
+        expected = list(region["expected_order"])
+        offset, anchor_score = (0, 0), None
+        if region.get("anchor"):
+            offset, anchor_score = locate_anchor(frame_bgr, region["anchor"],
+                                                 profile.get("image_size"), search_px)
+            if anchor_score >= min_anchor:
+                x1, x2 = x1 + offset[0], x2 + offset[0]
+                y1, y2 = y1 + offset[1], y2 + offset[1]
         x1, x2 = sorted((max(0, x1), min(w, x2)))
         y1, y2 = sorted((max(0, y1), min(h, y2)))
-        expected = list(region["expected_order"])
-        result = RegionResult(region["name"], (x1, y1, x2, y2), expected, [])
+        result = RegionResult(region["name"], (x1, y1, x2, y2), expected, [],
+                              offset=offset, anchor_score=anchor_score)
 
+        if anchor_score is not None and anchor_score < min_anchor:
+            result.message = f"Connector not found (match {anchor_score:.2f})"
+            regions.append(result)
+            continue
         if x2 - x1 < 2 or y2 - y1 < 2:
             result.message = "Region is outside the image"
             regions.append(result)

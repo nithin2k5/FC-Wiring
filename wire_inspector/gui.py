@@ -12,7 +12,7 @@ import numpy as np
 from PIL import Image, ImageTk
 
 from .camera import RESOLUTIONS, list_cameras, open_camera
-from .detector import draw_result, inspect, load_config, save_config, scale_box
+from .detector import draw_result, inspect, load_config, make_anchor, save_config, scale_box
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
 PASS_BG = "#1f9d3a"
@@ -288,9 +288,14 @@ class WireInspectorApp:
         if not order:
             self.redraw()
             return
-        profile["regions"].append({"name": name, "box": box, "expected_order": order})
+        region = {"name": name, "box": box, "expected_order": order}
+        anchor = make_anchor(self.frame, box, profile["image_size"])
+        if anchor:
+            region["anchor"] = anchor
+        profile["regions"].append(region)
         self._on_profile_change()
-        self.set_status(f"Added region '{name}'. Remember to Save Config.")
+        note = "" if anchor else " (no room above it for a connector anchor, so it won't follow the connector)"
+        self.set_status(f"Added region '{name}'{note}. Remember to Save Config.")
 
     # --------------------------------------------------------------- input
     @staticmethod
