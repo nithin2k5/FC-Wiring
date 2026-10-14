@@ -14,7 +14,7 @@ python main.py
 1. **Open Images** (select one or more files), **Open Folder**, or use the camera bar: pick a detected camera from the **Camera** list, choose a **Resolution**, and press **Start Camera**. Press **Refresh** after plugging in a camera. Changing the camera or resolution while it is running restarts it.
 2. Choose a **Profile** (part model). The verdict panel shows PASS/FAIL, and the table shows the expected and detected order for each region.
 3. With **Live inspect** on, every camera frame is inspected automatically. **Save Result** writes the annotated image. To inspect a single shot instead, press **Capture**: the camera stops, the current frame is saved to the `captures/` folder and inspected, and it's added to the image list. Press **Start Camera** to go live again.
-4. If the camera is mounted upside down, tick **Flip upside down**. It applies to camera frames and loaded images, and **Save Config** remembers it. Set it before configuring regions: regions drawn on unflipped images won't find their connectors once the image is flipped.
+4. If the camera image is upside down or mirrored, tick **Flip up/down** and/or **Flip left/right**. The flip applies to camera frames and loaded images, and **Save Config** remembers it. Flipping left/right also reverses the wire order the app sees, so only use it to undo a mirrored camera. Set the flip before configuring regions: regions drawn on unflipped images won't find their connectors once the image is flipped.
 
 ### Testing with images
 
@@ -25,12 +25,10 @@ After loading several images or a folder, step through them with **< Prev** / **
 ### Configuring a new model
 
 1. Load a reference image, click **New**, and enter the model name.
-2. Turn on **Edit regions** and drag the **wires ROI** (yellow) for the first connector: a tight box over the wire exit, covering the wires only, not the blue fixture.
+2. Turn on **Edit regions** and drag a box around the wire exit of each connector. Keep the box tight: it should cover the wires only, not the blue fixture.
 3. Enter the expected colors left to right, e.g. `black, blue` or, for a 3 or 4 wire connector, `black, blue, black, red`. A color can appear more than once.
-4. A banner then asks for the **connector ROI** (magenta): drag a tight box around the connector body (the green housing and black boot), not the wires or the fixture. This picture (the *anchor*) is how the region finds its connector anywhere in the frame. Press Esc to skip, and the region stays at a fixed position.
-5. Repeat for each connector, then click **Save Config**.
-
-In edit mode both ROIs are drawn and labelled where the connector is in the current image. To change one later, select the region and press **Draw wires ROI** or **Draw connector ROI**. You can redraw on any image, even one where the connector has moved: the other ROI stays aligned. Use real camera frames (for example from **Capture**), not annotated images.
+4. Next, the app asks for the connector: drag a tight box around the connector body (the green housing and black boot), not the wires or the fixture. This picture (the *anchor*) is how the region finds its connector anywhere in the frame. Press Esc to skip, and the region stays at a fixed position. **Set connector** redoes this for the selected region. Use a clean camera frame, not an annotated image.
+5. Click **Save Config**.
 
 ## How detection works
 
