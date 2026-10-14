@@ -252,3 +252,34 @@ def test_sample_with_search_areas(dx, dy):
     result = inspect(shift(cv2.imread(str(SAMPLE)), dx, dy), config, "FCFK2FF3")
     assert result.passed, [r.message for r in result.regions]
     assert all(r.offset == (dx, dy) for r in result.regions)
+
+
+# A black wire as the user's camera sees it (measured on a real frame): a blue
+# cast, HSV H 116, S 89, V 55. Its saturation is inside blue's range, so the
+# fixed ranges alone call it blue; only its low chroma (about 19) says black.
+TINTED_BLACK = (55, 40, 36)
+# A blue wire in deep shadow: dark enough for black's range, but clearly saturated.
+SHADOWED_BLUE = (60, 25, 10)
+
+
+def test_tinted_black_wire_is_black_not_blue():
+    result = inspect(multi_wire_frame([TINTED_BLACK, BLUE]), multi_wire_config(["black", "blue"]), "test")
+    assert result.passed, result.regions[0].message
+
+
+def test_tinted_black_wire_does_not_count_as_blue():
+    result = inspect(multi_wire_frame([TINTED_BLACK, (255, 255, 255)]), multi_wire_config(["blue"]), "test")
+    assert not result.passed
+    assert result.regions[0].message == "Not detected: blue"
+
+
+def test_shadowed_blue_stays_blue():
+    result = inspect(multi_wire_frame([TINTED_BLACK, SHADOWED_BLUE]), multi_wire_config(["black", "blue"]), "test")
+    assert result.passed, result.regions[0].message
+
+
+@pytest.mark.parametrize("gain", [0.6, 1.0, 1.5, 2.0])
+def test_black_survives_exposure_changes(gain):
+    frame = multi_wire_frame([TINTED_BLACK, BLUE]).astype(float) * gain
+    result = inspect(np.clip(frame, 0, 255).astype(np.uint8), multi_wire_config(["black", "blue"]), "test")
+    assert result.passed, result.regions[0].message

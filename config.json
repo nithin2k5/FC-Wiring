@@ -15,7 +15,9 @@
             70
           ]
         ]
-      ]
+      ],
+      "relative_dark": 0.5,
+      "achromatic": true
     },
     "blue": {
       "display": "#1e64ff",
@@ -78,7 +80,8 @@
             255
           ]
         ]
-      ]
+      ],
+      "achromatic": true
     },
     "yellow": {
       "display": "#ffd400",
@@ -101,7 +104,9 @@
   "detection": {
     "min_column_fill": 0.35,
     "min_wire_width_px": 3,
-    "anchor_min_score": 0.5
+    "anchor_min_score": 0.5,
+    "colored_min_saturation": 110,
+    "colored_min_chroma": 40
   },
   "profiles": {
     "FCFK2FF3": {

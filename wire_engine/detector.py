@@ -120,16 +120,33 @@ def _column_runs(fill: np.ndarray, min_fill: float, min_width: int, count: int):
 
 
 def detect_wires(region_bgr: np.ndarray, colors: dict, color_counts: dict[str, int],
-                 min_fill: float = 0.35, min_width: int = 3) -> list[WireDetection]:
+                 min_fill: float = 0.35, min_width: int = 3,
+                 min_sat: int = 110, min_chroma: int = 40) -> list[WireDetection]:
     """Find up to color_counts[name] wires of each color, sorted left to right."""
     blurred = cv2.GaussianBlur(region_bgr, (5, 5), 0)
     hsv = cv2.cvtColor(blurred, cv2.COLOR_BGR2HSV)
     kernel = np.ones((3, 3), np.uint8)
 
+    # A pixel is "colored" if it is clearly saturated, or its chroma (brightest
+    # minus darkest channel) is high. HSV saturation alone misleads on dark
+    # pixels: a black wire with a slight blue cast can be as saturated as a pale
+    # blue, while its chroma stays low. Chroma alone misleads the other way: a
+    # blue wire in deep shadow has low chroma but stays highly saturated.
+    # Achromatic colors (black, white) must not be colored; the rest must be.
+    chroma = blurred.max(axis=2).astype(np.int16) - blurred.min(axis=2)
+    colored = (hsv[..., 1] >= min_sat) | (chroma >= min_chroma)
+    background = float(np.percentile(hsv[..., 2], 90))
+
     masks = {}
     for name in color_counts:
-        mask = color_mask(hsv, colors[name]["hsv_ranges"])
-        masks[name] = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+        spec = colors[name]
+        mask = color_mask(hsv, spec["hsv_ranges"]) > 0
+        if "relative_dark" in spec:
+            # Also count pixels much darker than the region's background, so a
+            # black wire under bright light still counts as black.
+            mask |= hsv[..., 2] <= spec["relative_dark"] * background
+        mask &= ~colored if spec.get("achromatic") else colored
+        masks[name] = cv2.morphologyEx(mask.astype(np.uint8) * 255, cv2.MORPH_OPEN, kernel)
 
     # Dark, saturated pixels (e.g. a blue wire in shadow) can fall inside the
     # black range; don't let a chromatic color's pixels count as black too.
@@ -297,6 +314,8 @@ def inspect(frame_bgr: np.ndarray, config: dict, profile_name: str) -> Inspectio
     min_fill = det_cfg.get("min_column_fill", 0.35)
     min_width = det_cfg.get("min_wire_width_px", 3)
     min_anchor = det_cfg.get("anchor_min_score", 0.5)
+    min_sat = det_cfg.get("colored_min_saturation", 110)
+    min_chroma = det_cfg.get("colored_min_chroma", 40)
 
     h, w = frame_bgr.shape[:2]
     located = locate_regions(frame_bgr, profile["regions"], profile.get("image_size"), min_anchor)
@@ -326,7 +345,8 @@ def inspect(frame_bgr: np.ndarray, config: dict, profile_name: str) -> Inspectio
 
         crop = frame_bgr[y1:y2, x1:x2]
         counts = Counter(expected)
-        result.detections = detect_wires(crop, colors, counts, min_fill, min_width)
+        result.detections = detect_wires(crop, colors, counts, min_fill, min_width,
+                                         min_sat, min_chroma)
         result.detected_order = [d.color for d in result.detections]
         found = Counter(result.detected_order)
         missing = []

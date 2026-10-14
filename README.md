@@ -42,6 +42,8 @@ Before that, every region's anchor is searched for, inside the region's search a
 The settings you can tune in `config.json`:
 
 - `colors.<name>.hsv_ranges`: OpenCV HSV bounds (H 0–180). Add new wire colors here.
+- `colors.<name>.achromatic`: `true` for black and white. A pixel counts as *colored* if its saturation is at least `detection.colored_min_saturation` (110) or its chroma, the brightest minus the darkest RGB channel, is at least `detection.colored_min_chroma` (40). Achromatic colors only match pixels that aren't colored, the other colors only pixels that are. This keeps a black wire with a bluish camera tint from being read as blue, and a blue wire in shadow from being read as black.
+- `colors.black.relative_dark`: a pixel also counts as black if it's at most this fraction (0.5) of the region's background brightness, so a black wire under bright light or high exposure still counts as black.
 - `detection.min_column_fill`: fraction of the region height a column must cover to count as wire.
 - `detection.anchor_min_score`: minimum template match (0–1) to accept the connector's new position.
 - `profiles.<model>.image_size`: the resolution the boxes were drawn at. Boxes scale automatically to other resolutions.
