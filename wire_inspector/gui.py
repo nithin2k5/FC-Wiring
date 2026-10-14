@@ -5,11 +5,15 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
+import csv
+
 import cv2
+import numpy as np
 from PIL import Image, ImageTk
 
 from .detector import draw_result, inspect, load_config, save_config, scale_box
 
+IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
 PASS_BG = "#1f9d3a"
 FAIL_BG = "#c62828"
 IDLE_BG = "#616161"
@@ -29,6 +33,8 @@ class WireInspectorApp:
         self.capture = None
         self.drag_start = None
         self.drag_rect = None
+        self.image_paths: list[Path] = []
+        self.image_index = -1
 
         root.title("FC Wiring Inspector")
         root.geometry("1280x760")
@@ -36,13 +42,16 @@ class WireInspectorApp:
         self._build_ui()
         self._refresh_profiles()
         root.protocol("WM_DELETE_WINDOW", self.on_close)
+        root.bind("<Left>", lambda e: self.step_image(-1))
+        root.bind("<Right>", lambda e: self.step_image(1))
 
     # ------------------------------------------------------------------ UI
     def _build_ui(self):
         toolbar = ttk.Frame(self.root, padding=6)
         toolbar.pack(side=tk.TOP, fill=tk.X)
 
-        ttk.Button(toolbar, text="Open Image", command=self.open_image).pack(side=tk.LEFT)
+        ttk.Button(toolbar, text="Open Images", command=self.open_images).pack(side=tk.LEFT)
+        ttk.Button(toolbar, text="Open Folder", command=self.open_folder).pack(side=tk.LEFT, padx=(6, 0))
         self.cam_btn = ttk.Button(toolbar, text="Start Camera", command=self.toggle_camera)
         self.cam_btn.pack(side=tk.LEFT, padx=(6, 0))
         ttk.Label(toolbar, text="Cam #").pack(side=tk.LEFT, padx=(6, 2))
@@ -99,6 +108,17 @@ class WireInspectorApp:
         self.results.pack(fill=tk.X)
         self.detail = ttk.Label(side, text="", wraplength=340, justify=tk.LEFT)
         self.detail.pack(fill=tk.X, pady=4)
+
+        ttk.Label(side, text="Test images", font=("Segoe UI", 10, "bold")).pack(anchor=tk.W, pady=(10, 2))
+        nav = ttk.Frame(side)
+        nav.pack(fill=tk.X)
+        ttk.Button(nav, text="< Prev", width=8, command=lambda: self.step_image(-1)).pack(side=tk.LEFT)
+        self.image_counter = ttk.Label(nav, text="0 / 0", anchor=tk.CENTER)
+        self.image_counter.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        ttk.Button(nav, text="Next >", width=8, command=lambda: self.step_image(1)).pack(side=tk.LEFT)
+        self.image_name = ttk.Label(side, text="", foreground="#666")
+        self.image_name.pack(anchor=tk.W)
+        ttk.Button(side, text="Test All Images", command=self.test_all).pack(fill=tk.X, pady=(4, 0))
 
         ttk.Label(side, text="Configured regions", font=("Segoe UI", 10, "bold")).pack(anchor=tk.W, pady=(10, 2))
         self.region_list = tk.Listbox(side, height=6)
@@ -256,19 +276,71 @@ class WireInspectorApp:
         self.set_status(f"Added region '{name}'. Remember to Save Config.")
 
     # --------------------------------------------------------------- input
-    def open_image(self):
-        path = filedialog.askopenfilename(
+    @staticmethod
+    def read_image(path: Path):
+        # cv2.imread can't open non-ASCII paths on Windows; decode from bytes instead.
+        data = np.fromfile(str(path), dtype=np.uint8)
+        return cv2.imdecode(data, cv2.IMREAD_COLOR) if data.size else None
+
+    def open_images(self):
+        paths = filedialog.askopenfilenames(
             filetypes=[("Images", "*.png *.jpg *.jpeg *.bmp *.tif *.tiff"), ("All files", "*.*")])
-        if not path:
+        if paths:
+            self._set_images([Path(p) for p in paths])
+
+    def open_folder(self):
+        folder = filedialog.askdirectory()
+        if not folder:
             return
-        frame = cv2.imread(path)
-        if frame is None:
-            messagebox.showerror("Open image", f"Could not read {path}")
+        paths = sorted(p for p in Path(folder).iterdir() if p.suffix.lower() in IMAGE_EXTS)
+        if not paths:
+            messagebox.showinfo("Open folder", "No images found in that folder.")
             return
+        self._set_images(paths)
+
+    def _set_images(self, paths: list[Path]):
         self.stop_camera()
+        self.image_paths = paths
+        self.show_image(0)
+
+    def step_image(self, delta: int):
+        if self.image_paths and not isinstance(self.root.focus_get(), (tk.Entry, ttk.Entry, tk.Listbox)):
+            self.show_image((self.image_index + delta) % len(self.image_paths))
+
+    def show_image(self, index: int):
+        self.stop_camera()
+        self.image_index = index
+        path = self.image_paths[index]
+        self.image_counter.config(text=f"{index + 1} / {len(self.image_paths)}")
+        self.image_name.config(text=path.name)
+        frame = self.read_image(path)
+        if frame is None:
+            self.frame = self.display = None
+            self._clear_results("UNREADABLE")
+            self.redraw()
+            self.set_status(f"Could not read {path}")
+            return
         self.frame = frame
-        self.set_status(f"Loaded {Path(path).name}  ({frame.shape[1]}x{frame.shape[0]})")
+        self.set_status(f"Loaded {path.name}  ({frame.shape[1]}x{frame.shape[0]})")
         self.run_inspection()
+
+    def test_all(self):
+        if not self.image_paths:
+            messagebox.showinfo("Test all", "Open images or a folder first.")
+            return
+        if not self.profile or not self.profile["regions"]:
+            messagebox.showinfo("Test all", "The selected profile has no regions.")
+            return
+        rows = []
+        for path in self.image_paths:
+            frame = self.read_image(path)
+            if frame is None:
+                rows.append((path, "ERROR", "Could not read image"))
+                continue
+            result = inspect(frame, self.config, self.profile_var.get())
+            rows.append((path, "PASS" if result.passed else "FAIL",
+                         "; ".join(f"{r.name}: {r.message}" for r in result.regions)))
+        BatchReport(self, rows, self.profile_var.get())
 
     def toggle_camera(self):
         if self.capture:
@@ -375,6 +447,67 @@ class WireInspectorApp:
     def on_close(self):
         self.stop_camera()
         self.root.destroy()
+
+
+class BatchReport(tk.Toplevel):
+    """Summary window for testing every loaded image against a profile."""
+
+    def __init__(self, app: WireInspectorApp, rows, profile: str):
+        super().__init__(app.root)
+        self.app = app
+        self.rows = rows
+        self.profile = profile
+        passed = sum(1 for _, status, _ in rows if status == "PASS")
+        self.title(f"Batch results - {profile}")
+        self.geometry("900x420")
+
+        tk.Label(self, text=f"{passed} / {len(rows)} passed    {len(rows) - passed} failed",
+                 font=("Segoe UI", 14, "bold"), fg="white",
+                 bg=PASS_BG if passed == len(rows) else FAIL_BG, pady=6).pack(fill=tk.X)
+
+        frame = ttk.Frame(self, padding=6)
+        frame.pack(fill=tk.BOTH, expand=True)
+        tree = ttk.Treeview(frame, columns=("result", "details"), show="tree headings")
+        tree.heading("#0", text="Image")
+        tree.column("#0", width=220)
+        tree.heading("result", text="Result")
+        tree.column("result", width=70, anchor=tk.CENTER)
+        tree.heading("details", text="Details")
+        tree.column("details", width=560)
+        tree.tag_configure("pass", foreground=PASS_BG)
+        tree.tag_configure("fail", foreground=FAIL_BG)
+        scroll = ttk.Scrollbar(frame, orient=tk.VERTICAL, command=tree.yview)
+        tree.configure(yscrollcommand=scroll.set)
+        tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        for i, (path, status, details) in enumerate(rows):
+            tree.insert("", tk.END, iid=str(i), text=path.name, values=(status, details),
+                        tags=("pass" if status == "PASS" else "fail",))
+        tree.bind("<Double-1>", self._open_selected)
+        self.tree = tree
+
+        bar = ttk.Frame(self, padding=6)
+        bar.pack(fill=tk.X)
+        ttk.Label(bar, text="Double-click a row to view it.", foreground="#666").pack(side=tk.LEFT)
+        ttk.Button(bar, text="Export CSV", command=self.export_csv).pack(side=tk.RIGHT)
+
+    def _open_selected(self, _event):
+        sel = self.tree.selection()
+        if sel:
+            self.app.show_image(int(sel[0]))
+
+    def export_csv(self):
+        path = filedialog.asksaveasfilename(parent=self, defaultextension=".csv",
+                                            initialfile=f"{self.profile}_results.csv",
+                                            filetypes=[("CSV", "*.csv")])
+        if not path:
+            return
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(["image", "profile", "result", "details"])
+            for img, status, details in self.rows:
+                writer.writerow([str(img), self.profile, status, details])
+        self.app.set_status(f"Exported {path}")
 
 
 def run(config_path: Path):

@@ -11,9 +11,15 @@ python main.py
 
 ## Using the app
 
-1. **Open Image** or **Start Camera** (set the camera index with `Cam #`).
+1. **Open Images** (select one or more files), **Open Folder**, or **Start Camera** (set the camera index with `Cam #`).
 2. Choose a **Profile** (part model). The verdict panel shows PASS/FAIL, and the table shows the expected and detected order for each region.
 3. With **Live inspect** on, every camera frame is inspected automatically. **Save Result** writes the annotated image.
+
+### Testing with images
+
+After loading several images or a folder, step through them with **< Prev** / **Next >** (or the arrow keys). Each image is inspected as it is shown.
+
+**Test All Images** runs every loaded image against the current profile and opens a summary window with the pass count and the result for each image. Double-click a row to view that image, or use **Export CSV** to save the report.
 
 ### Configuring a new model
 
