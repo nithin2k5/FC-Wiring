@@ -4,7 +4,7 @@ import cv2
 import numpy as np
 import pytest
 
-from wire_engine import draw_result, inspect, load_config, make_anchor
+from wire_engine import draw_result, inspect, load_config, locate_regions, make_anchor
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = load_config(ROOT / "config.json")
@@ -226,7 +226,7 @@ def test_connector_outside_its_area_not_found():
     draw_connector(frame, 200, 150, BLUE, BLACK)   # R's connector, but in L's area
     result = inspect(frame, config, "test")
     assert result.regions[0].passed
-    assert result.regions[1].message == "Connector not found in its area"
+    assert result.regions[1].message == "Connector and wires not found in its area"
 
 
 def test_wires_box_stays_inside_area():
@@ -295,3 +295,83 @@ def test_result_image_flags_missing_connector_instead_of_stale_box():
     assert (out[155, 95:186] == 255).all() and (out[155:236, 95] == 255).all()
     # ...but a red "not found" label at the top of L's area.
     assert (out[5:35, 0:300] != 255).any()
+
+
+def draw_bootless(frame, x, y, left_bgr, right_bgr):
+    """The connector without its black boot, looking too different to match its picture."""
+    cv2.rectangle(frame, (x + 15, y - 30), (x + 65, y), (150, 150, 150), -1)
+    cv2.rectangle(frame, (x + 25, y), (x + 34, y + 90), left_bgr, -1)
+    cv2.rectangle(frame, (x + 46, y), (x + 55, y + 90), right_bgr, -1)
+
+
+def bootless_frame(l_wires, r_wires, l_pos=(100, 150), r_pos=(400, 150)):
+    frame = np.full((400, 600, 3), 255, np.uint8)
+    draw_bootless(frame, *l_pos, *l_wires)
+    draw_bootless(frame, *r_pos, *r_wires)
+    return frame
+
+
+AREAS = [[0, 0, 300, 400], [300, 0, 600, 400]]
+
+
+def test_part_without_boot_is_found_by_its_wires():
+    # The connector pictures were taken with the boot on; this part has none,
+    # so the connector isn't recognised and the wires are found directly.
+    config = with_areas(two_connector_config(), AREAS)
+    frame = bootless_frame((BLACK, BLUE), (BLUE, BLACK))
+    assert all(score == 0.0 for _, score in locate_regions(
+        frame, config["profiles"]["test"]["regions"], [600, 400], 0.5))
+    result = inspect(frame, config, "test")
+    assert result.passed, [r.message for r in result.regions]
+    assert [r.located_by for r in result.regions] == ["wires", "wires"]
+
+
+def test_part_without_boot_moved_inside_its_area():
+    config = with_areas(two_connector_config(), AREAS)
+    frame = bootless_frame((BLACK, BLUE), (BLUE, BLACK), l_pos=(30, 260), r_pos=(470, 100))
+    result = inspect(frame, config, "test")
+    assert result.passed, [r.message for r in result.regions]
+    assert result.regions[0].box[0] <= 30 + 25 and result.regions[0].box[2] >= 30 + 55
+
+
+def test_part_without_boot_wrong_order_still_fails():
+    config = with_areas(two_connector_config(), AREAS)
+    result = inspect(bootless_frame((BLUE, BLACK), (BLUE, BLACK)), config, "test")
+    assert not result.regions[0].passed
+    assert result.regions[0].message == "Wrong order: got blue | black, expected black | blue"
+    assert result.regions[1].passed
+
+
+def test_part_without_boot_missing_wire_fails():
+    config = with_areas(two_connector_config(), AREAS)
+    result = inspect(bootless_frame((BLACK, (255, 255, 255)), (BLUE, BLACK)), config, "test")
+    assert not result.regions[0].passed
+    assert "blue" in result.regions[0].message
+
+
+def test_without_area_no_wire_search():
+    # Without a search area the wires aren't searched for, so a box can't wander
+    # onto another connector's wires.
+    result = inspect(bootless_frame((BLACK, BLUE), (BLUE, BLACK)), two_connector_config(), "test")
+    assert all(r.message == "Connector not found" for r in result.regions)
+
+
+def test_matching_connector_still_used_first():
+    config = with_areas(two_connector_config(), AREAS)
+    frame = np.full((400, 600, 3), 255, np.uint8)
+    draw_connector(frame, 100, 150, BLACK, BLUE)
+    draw_connector(frame, 400, 150, BLUE, BLACK)
+    result = inspect(frame, config, "test")
+    assert result.passed
+    assert [r.located_by for r in result.regions] == ["connector", "connector"]
+
+
+def test_foam_below_wires_does_not_pass_for_missing_black():
+    # Black wire missing, dark-gray foam sleeve under the wires: the area search
+    # must not slide the box onto the foam and call it the black wire.
+    config = with_areas(two_connector_config(), AREAS)
+    frame = bootless_frame(((255, 255, 255), BLUE), (BLUE, BLACK))
+    cv2.rectangle(frame, (115, 240), (165, 330), (70, 70, 70), -1)   # foam under L's wires
+    result = inspect(frame, config, "test")
+    assert not result.regions[0].passed
+    assert "black" in result.regions[0].message

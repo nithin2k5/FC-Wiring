@@ -14,6 +14,12 @@ configured left-to-right (or top-to-bottom) order, and each box moves with its
 connector. A region can also have a search area (search_box): its connector is
 then only looked for inside that area, which also decides which connector the
 region belongs to, and its wires box is kept inside the area.
+
+A connector doesn't always look like its picture (a part may come with or
+without its rubber boot). So in a region with a search area, if the connector
+isn't found or the wires box it gives doesn't hold the expected wires, the
+wires box is also slid over the whole area to where the expected colors run
+through it, and whichever placement finds more of the expected wires is used.
 """
 from __future__ import annotations
 
@@ -50,6 +56,10 @@ class RegionResult:
     offset: tuple[int, int] = (0, 0)  # shift found by the anchor, frame px
     anchor_score: float | None = None  # None if the region has no anchor
     search_box: tuple[int, int, int, int] | None = None  # search area, frame coordinates
+    # How the wires box was placed: "connector" (followed its connector),
+    # "wires" (found by sliding over the search area), "fixed" (configured
+    # position), or None when nothing was found.
+    located_by: str | None = "fixed"
 
 
 @dataclass
@@ -119,10 +129,9 @@ def _column_runs(fill: np.ndarray, min_fill: float, min_width: int, count: int):
     return pieces[:count]
 
 
-def detect_wires(region_bgr: np.ndarray, colors: dict, color_counts: dict[str, int],
-                 min_fill: float = 0.35, min_width: int = 3,
-                 min_sat: int = 110, min_chroma: int = 40) -> list[WireDetection]:
-    """Find up to color_counts[name] wires of each color, sorted left to right."""
+def wire_masks(region_bgr: np.ndarray, colors: dict, names, min_sat: int = 110,
+               min_chroma: int = 40) -> dict[str, np.ndarray]:
+    """A 0/255 mask per color name for the pixels that look like that wire color."""
     blurred = cv2.GaussianBlur(region_bgr, (5, 5), 0)
     hsv = cv2.cvtColor(blurred, cv2.COLOR_BGR2HSV)
     kernel = np.ones((3, 3), np.uint8)
@@ -138,7 +147,7 @@ def detect_wires(region_bgr: np.ndarray, colors: dict, color_counts: dict[str, i
     background = float(np.percentile(hsv[..., 2], 90))
 
     masks = {}
-    for name in color_counts:
+    for name in names:
         spec = colors[name]
         mask = color_mask(hsv, spec["hsv_ranges"]) > 0
         if "relative_dark" in spec:
@@ -154,7 +163,14 @@ def detect_wires(region_bgr: np.ndarray, colors: dict, color_counts: dict[str, i
         for name, mask in masks.items():
             if name != "black":
                 masks["black"] = cv2.bitwise_and(masks["black"], cv2.bitwise_not(mask))
+    return masks
 
+
+def detect_wires(region_bgr: np.ndarray, colors: dict, color_counts: dict[str, int],
+                 min_fill: float = 0.35, min_width: int = 3,
+                 min_sat: int = 110, min_chroma: int = 40) -> list[WireDetection]:
+    """Find up to color_counts[name] wires of each color, sorted left to right."""
+    masks = wire_masks(region_bgr, colors, color_counts, min_sat, min_chroma)
     results = []
     for name, mask in masks.items():
         fill = (mask > 0).mean(axis=0)
@@ -164,6 +180,47 @@ def detect_wires(region_bgr: np.ndarray, colors: dict, color_counts: dict[str, i
             center = float((cols * weights).sum() / weights.sum())
             results.append(WireDetection(name, True, center, start, end, score))
     return sorted(results, key=lambda d: d.center_x)
+
+
+def find_wires_box(area_bgr: np.ndarray, colors: dict, names, box_w: int, box_h: int,
+                   min_fill: float = 0.35, min_sat: int = 110,
+                   min_chroma: int = 40) -> tuple[int, int, int, int] | None:
+    """Where in area_bgr a box_w x box_h wires box best holds wires of all the colors.
+
+    Every box position is scored by, for each color, the best fill of a column
+    inside the box (how much of the box height that color covers). Positions
+    that hold all the wires form a plateau of top scores; the box is put at
+    its center so the wires sit in the middle. If no position holds every
+    color, the one holding the most is used, so a missing wire is reported as
+    missing. Returns (x1, y1, x2, y2) in area coordinates, or None if no wire
+    of any of the colors is in the area.
+    """
+    ah, aw = area_bgr.shape[:2]
+    box_w, box_h = min(box_w, aw), min(box_h, ah)
+    if box_w < 3 or box_h < 3:
+        return None
+    masks = wire_masks(area_bgr, colors, names, min_sat, min_chroma)
+    score = np.zeros((ah - box_h + 1, aw - box_w + 1), np.float32)
+    weakest = np.full_like(score, np.inf)
+    for mask in masks.values():
+        cum = np.vstack([np.zeros((1, aw), np.float32), np.cumsum(mask > 0, axis=0, dtype=np.float32)])
+        fill = (cum[box_h:] - cum[:-box_h]) / box_h               # column fill for each box top
+        # Best column within each box: a sliding max over box_w columns.
+        best = cv2.dilate(fill, np.ones((1, box_w), np.uint8), anchor=(0, 0))[:, :aw - box_w + 1]
+        score += best
+        weakest = np.minimum(weakest, best)
+    complete = weakest >= min_fill
+    if complete.any():
+        score[~complete] = 0                                       # prefer boxes with every color
+    top = float(score.max())
+    if top < min_fill:
+        return None
+    plateau = (score >= top - 0.05 * len(masks)).astype(np.uint8)
+    _, labels = cv2.connectedComponents(plateau)
+    by, bx = np.unravel_index(int(np.argmax(score)), score.shape)
+    ys, xs = np.nonzero(labels == labels[by, bx])
+    x, y = int(round(xs.mean())), int(round(ys.mean()))
+    return x, y, x + box_w, y + box_h
 
 
 def scale_box(box, profile_size, frame_size):
@@ -316,38 +373,68 @@ def inspect(frame_bgr: np.ndarray, config: dict, profile_name: str) -> Inspectio
     min_anchor = det_cfg.get("anchor_min_score", 0.5)
     min_sat = det_cfg.get("colored_min_saturation", 110)
     min_chroma = det_cfg.get("colored_min_chroma", 40)
+    # Stricter fill for wires found by searching the area: a real wire runs
+    # through the whole box, while foam or a boot next to a wire end only
+    # fills part of it, so this keeps them from passing for a missing wire.
+    search_fill = max(min_fill, det_cfg.get("wire_search_min_fill", 0.6))
 
     h, w = frame_bgr.shape[:2]
     located = locate_regions(frame_bgr, profile["regions"], profile.get("image_size"), min_anchor)
     regions = []
     for region, location in zip(profile["regions"], located):
         x1, y1, x2, y2 = scale_box(region["box"], profile.get("image_size"), (w, h))
+        box_w, box_h = x2 - x1, y2 - y1
         expected = list(region["expected_order"])
+        counts = Counter(expected)
         offset, anchor_score = location if location else ((0, 0), None)
-        if anchor_score:
-                x1, x2 = x1 + offset[0], x2 + offset[0]
-                y1, y2 = y1 + offset[1], y2 + offset[1]
         area = search_area(region, profile.get("image_size"), (w, h))
         bx1, by1, bx2, by2 = area or (0, 0, w, h)
-        x1, x2 = sorted((max(bx1, x1), min(bx2, x2)))
-        y1, y2 = sorted((max(by1, y1), min(by2, y2)))
-        result = RegionResult(region["name"], (x1, y1, x2, y2), expected, [],
-                              offset=offset, anchor_score=anchor_score, search_box=area)
 
-        if anchor_score is not None and anchor_score < min_anchor:
-            result.message = "Connector not found" + (" in its area" if area else "")
+        def check(box, fill=min_fill):
+            """Clip box to the area and detect the wires in it: (box, detections, wires found)."""
+            cx1, cx2 = sorted((max(bx1, box[0]), min(bx2, box[2])))
+            cy1, cy2 = sorted((max(by1, box[1]), min(by2, box[3])))
+            if cx2 - cx1 < 2 or cy2 - cy1 < 2:
+                return (cx1, cy1, cx2, cy2), [], -1
+            dets = detect_wires(frame_bgr[cy1:cy2, cx1:cx2], colors, counts, fill, min_width,
+                                min_sat, min_chroma)
+            found = Counter(d.color for d in dets)
+            return (cx1, cy1, cx2, cy2), dets, sum(min(found[c], n) for c, n in counts.items())
+
+        placed = None  # (box, detections, wires found, located_by)
+        if anchor_score is None:
+            placed = (*check((x1, y1, x2, y2)), "fixed")
+        elif anchor_score >= min_anchor:
+            placed = (*check((x1 + offset[0], y1 + offset[1], x2 + offset[0], y2 + offset[1])), "connector")
+        # In a search area, also look for the wires themselves when the
+        # connector wasn't found or its box doesn't hold every expected wire.
+        if area and (placed is None or placed[2] < len(expected)):
+            found_box = find_wires_box(frame_bgr[by1:by2, bx1:bx2], colors, counts, box_w, box_h,
+                                       search_fill, min_sat, min_chroma)
+            if found_box:
+                fx1, fy1, fx2, fy2 = found_box
+                alt = (*check((bx1 + fx1, by1 + fy1, bx1 + fx2, by1 + fy2), search_fill), "wires")
+                if placed is None or alt[2] > placed[2]:
+                    placed = alt
+
+        if placed is None:
+            result = RegionResult(region["name"], (x1, y1, x2, y2), expected, [], offset=offset,
+                                  anchor_score=anchor_score, search_box=area, located_by=None)
+            result.message = ("Connector and wires not found in its area" if area
+                              else "Connector not found")
             regions.append(result)
             continue
-        if x2 - x1 < 2 or y2 - y1 < 2:
+
+        box, detections, _, located_by = placed
+        result = RegionResult(region["name"], box, expected, [], offset=offset,
+                              anchor_score=anchor_score, search_box=area, located_by=located_by)
+        if box[2] - box[0] < 2 or box[3] - box[1] < 2:
             result.message = "Wires box is outside the " + ("search area" if area else "image")
             regions.append(result)
             continue
 
-        crop = frame_bgr[y1:y2, x1:x2]
-        counts = Counter(expected)
-        result.detections = detect_wires(crop, colors, counts, min_fill, min_width,
-                                         min_sat, min_chroma)
-        result.detected_order = [d.color for d in result.detections]
+        result.detections = detections
+        result.detected_order = [d.color for d in detections]
         found = Counter(result.detected_order)
         missing = []
         for c, n in counts.items():
@@ -373,7 +460,7 @@ def draw_result(frame_bgr: np.ndarray, result: InspectionResult) -> np.ndarray:
         if region.search_box:
             sx1, sy1, sx2, sy2 = region.search_box
             cv2.rectangle(out, (sx1, sy1), (sx2, sy2), (255, 200, 0), 1)
-        if region.anchor_score is not None and not region.anchor_score:
+        if region.located_by is None:
             # The connector wasn't found, so the wires box would only mark a
             # stale spot. Say so on the search area (or the frame) instead.
             if region.search_box:
