@@ -11,7 +11,9 @@ picture of the connector body, taken from the reference image. At inspection
 every anchor is template-matched over the whole frame. Connectors of the same
 type look alike, so the matches are assigned to regions in the regions'
 configured left-to-right (or top-to-bottom) order, and each box moves with its
-connector.
+connector. A region can also have a search area (search_box): its connector is
+then only looked for inside that area, which also decides which connector the
+region belongs to, and its wires box is kept inside the area.
 """
 from __future__ import annotations
 
@@ -47,6 +49,7 @@ class RegionResult:
     message: str = ""
     offset: tuple[int, int] = (0, 0)  # shift found by the anchor, frame px
     anchor_score: float | None = None  # None if the region has no anchor
+    search_box: tuple[int, int, int, int] | None = None  # search area, frame coordinates
 
 
 @dataclass
@@ -211,16 +214,33 @@ def find_anchor(frame_bgr: np.ndarray, template: np.ndarray, min_score: float,
 
 
 def _consistent(placed, size) -> bool:
-    """Matches must not overlap and must keep the regions' configured layout."""
-    for (o1, m1), (o2, m2) in itertools.combinations(placed, 2):
+    """Matches must not overlap and must keep the regions' configured layout.
+
+    Regions that both have a search area already know which connector is
+    theirs, so their layout isn't checked against each other.
+    """
+    for (o1, m1, a1), (o2, m2, a2) in itertools.combinations(placed, 2):
         if abs(m1[0] - m2[0]) < size[0] / 2 and abs(m1[1] - m2[1]) < size[1] / 2:
             return False
+        if a1 and a2:
+            continue
         for axis in (0, 1):
             if abs(o1[axis] - o2[axis]) >= size[axis] / 2:
                 if (o1[axis] < o2[axis]) != (m1[axis] < m2[axis]):
                     return False
                 break
     return True
+
+
+def search_area(region: dict, image_size, frame_size) -> tuple[int, int, int, int] | None:
+    """The region's search area in frame coordinates, clipped to the frame, or None."""
+    if not region.get("search_box"):
+        return None
+    w, h = frame_size
+    x1, y1, x2, y2 = scale_box(region["search_box"], image_size, frame_size)
+    x1, x2 = sorted((max(0, x1), min(w, x2)))
+    y1, y2 = sorted((max(0, y1), min(h, y2)))
+    return (x1, y1, x2, y2) if x2 - x1 >= 2 and y2 - y1 >= 2 else None
 
 
 def locate_regions(frame_bgr: np.ndarray, regions: list[dict], image_size,
@@ -231,7 +251,7 @@ def locate_regions(frame_bgr: np.ndarray, regions: list[dict], image_size,
     regions whose connector wasn't found.
     """
     h, w = frame_bgr.shape[:2]
-    anchored, origins, candidates = [], [], []
+    anchored, origins, candidates, has_area = [], [], [], []
     for i, region in enumerate(regions):
         anchor = region.get("anchor")
         if not anchor:
@@ -242,13 +262,21 @@ def locate_regions(frame_bgr: np.ndarray, regions: list[dict], image_size,
             template = cv2.resize(template, (ax2 - ax1, ay2 - ay1), interpolation=cv2.INTER_AREA)
         anchored.append(i)
         origins.append((ax1, ay1, ax2 - ax1, ay2 - ay1))
-        candidates.append(find_anchor(frame_bgr, template, min_score) + [None])
+        area = search_area(region, image_size, (w, h))
+        if area:
+            sx1, sy1, sx2, sy2 = area
+            matches = [(sx1 + x, sy1 + y, score)
+                       for x, y, score in find_anchor(frame_bgr[sy1:sy2, sx1:sx2], template, min_score)]
+        else:
+            matches = find_anchor(frame_bgr, template, min_score)
+        candidates.append(matches + [None])
+        has_area.append(area is not None)
 
     # Pick one match per region (or none), preferring more regions found, then
     # the higher total score, among layouts consistent with the configuration.
     best, best_key = None, None
     for combo in itertools.product(*candidates):
-        placed = [((o[0], o[1]), (m[0], m[1])) for o, m in zip(origins, combo) if m]
+        placed = [((o[0], o[1]), (m[0], m[1]), a) for o, m, a in zip(origins, combo, has_area) if m]
         size = (min(o[2] for o in origins), min(o[3] for o in origins)) if origins else (0, 0)
         if not _consistent(placed, size):
             continue
@@ -280,17 +308,19 @@ def inspect(frame_bgr: np.ndarray, config: dict, profile_name: str) -> Inspectio
         if anchor_score:
                 x1, x2 = x1 + offset[0], x2 + offset[0]
                 y1, y2 = y1 + offset[1], y2 + offset[1]
-        x1, x2 = sorted((max(0, x1), min(w, x2)))
-        y1, y2 = sorted((max(0, y1), min(h, y2)))
+        area = search_area(region, profile.get("image_size"), (w, h))
+        bx1, by1, bx2, by2 = area or (0, 0, w, h)
+        x1, x2 = sorted((max(bx1, x1), min(bx2, x2)))
+        y1, y2 = sorted((max(by1, y1), min(by2, y2)))
         result = RegionResult(region["name"], (x1, y1, x2, y2), expected, [],
-                              offset=offset, anchor_score=anchor_score)
+                              offset=offset, anchor_score=anchor_score, search_box=area)
 
         if anchor_score is not None and anchor_score < min_anchor:
-            result.message = "Connector not found"
+            result.message = "Connector not found" + (" in its area" if area else "")
             regions.append(result)
             continue
         if x2 - x1 < 2 or y2 - y1 < 2:
-            result.message = "Region is outside the image"
+            result.message = "Wires box is outside the " + ("search area" if area else "image")
             regions.append(result)
             continue
 
@@ -319,6 +349,9 @@ def inspect(frame_bgr: np.ndarray, config: dict, profile_name: str) -> Inspectio
 def draw_result(frame_bgr: np.ndarray, result: InspectionResult) -> np.ndarray:
     out = frame_bgr.copy()
     for region in result.regions:
+        if region.search_box:
+            sx1, sy1, sx2, sy2 = region.search_box
+            cv2.rectangle(out, (sx1, sy1), (sx2, sy2), (255, 200, 0), 1)
         x1, y1, x2, y2 = region.box
         color = (0, 200, 0) if region.passed else (0, 0, 255)
         cv2.rectangle(out, (x1, y1), (x2, y2), color, 2)

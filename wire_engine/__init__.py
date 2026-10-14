@@ -15,6 +15,7 @@ from .detector import (
     make_anchor,
     save_config,
     scale_box,
+    search_area,
 )
 
 __all__ = [
@@ -29,4 +30,5 @@ __all__ = [
     "make_anchor",
     "save_config",
     "scale_box",
+    "search_area",
 ]

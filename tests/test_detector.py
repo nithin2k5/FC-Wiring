@@ -199,3 +199,56 @@ def test_no_connector_fails():
     result = inspect(np.full((400, 600, 3), 255, np.uint8), two_connector_config(), "test")
     assert not result.passed
     assert all(r.message == "Connector not found" for r in result.regions)
+
+
+def with_areas(config, areas):
+    for region, area in zip(config["profiles"]["test"]["regions"], areas):
+        region["search_box"] = area
+    return config
+
+
+def test_search_areas_decide_which_connector_is_which():
+    # Area L is the top half, area R the bottom half. L's connector sits to the
+    # RIGHT of R's, which the left-to-right rule alone would have swapped.
+    config = with_areas(two_connector_config(), [[0, 0, 600, 200], [0, 200, 600, 400]])
+    frame = np.full((400, 600, 3), 255, np.uint8)
+    draw_connector(frame, 450, 100, BLACK, BLUE)   # L: black | blue
+    draw_connector(frame, 50, 290, BLUE, BLACK)    # R: blue | black
+    result = inspect(frame, config, "test")
+    assert result.passed, [r.message for r in result.regions]
+    assert [r.offset for r in result.regions] == [(350, -50), (-350, 140)]
+
+
+def test_connector_outside_its_area_not_found():
+    config = with_areas(two_connector_config(), [[0, 0, 300, 400], [300, 0, 600, 400]])
+    frame = np.full((400, 600, 3), 255, np.uint8)
+    draw_connector(frame, 100, 150, BLACK, BLUE)
+    draw_connector(frame, 200, 150, BLUE, BLACK)   # R's connector, but in L's area
+    result = inspect(frame, config, "test")
+    assert result.regions[0].passed
+    assert result.regions[1].message == "Connector not found in its area"
+
+
+def test_wires_box_stays_inside_area():
+    # L's wires box spans y 155-235, but its area stops at y 220.
+    config = with_areas(two_connector_config(), [[0, 0, 300, 220], [300, 0, 600, 400]])
+    frame = np.full((400, 600, 3), 255, np.uint8)
+    draw_connector(frame, 100, 150, BLACK, BLUE)
+    draw_connector(frame, 400, 150, BLUE, BLACK)
+    result = inspect(frame, config, "test")
+    assert result.passed, [r.message for r in result.regions]
+    assert result.regions[0].box == (95, 155, 185, 220)
+    assert result.regions[0].search_box == (0, 0, 300, 220)
+
+
+@pytest.mark.skipif(not SAMPLE.exists(), reason="sample image missing")
+@pytest.mark.parametrize("dx, dy", [(0, 0), (60, 40), (-80, -30)])
+def test_sample_with_search_areas(dx, dy):
+    import copy
+    config = copy.deepcopy(CONFIG)
+    left, right = config["profiles"]["FCFK2FF3"]["regions"]
+    left["search_box"] = [150, 250, 560, 640]
+    right["search_box"] = [660, 230, 1080, 640]
+    result = inspect(shift(cv2.imread(str(SAMPLE)), dx, dy), config, "FCFK2FF3")
+    assert result.passed, [r.message for r in result.regions]
+    assert all(r.offset == (dx, dy) for r in result.regions)

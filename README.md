@@ -28,13 +28,14 @@ After loading several images or a folder, step through them with **< Prev** / **
 2. Turn on **Edit regions** and drag a box around the wire exit of each connector. Keep the box tight: it should cover the wires only, not the blue fixture.
 3. Enter the expected colors left to right, e.g. `black, blue` or, for a 3 or 4 wire connector, `black, blue, black, red`. A color can appear more than once.
 4. Next, the app asks for the connector: drag a tight box around the connector body (the green housing and black boot), not the wires or the fixture. This picture (the *anchor*) is how the region finds its connector anywhere in the frame. Press Esc to skip, and the region stays at a fixed position. **Set connector** redoes this for the selected region. Use a clean camera frame, not an annotated image.
-5. Click **Save Config**.
+5. Then it asks for the **search area**: drag a box that holds this connector and its wires wherever they can be, and no other connector. The connector is then only looked for inside its area, which also fixes which connector is connector 1 and which is connector 2. Press Esc to skip, and the connector is looked for anywhere in the frame. **Set area** redoes this for the selected region.
+6. Repeat for each connector, then click **Save Config**.
 
 ## How detection works
 
 Each region is converted to HSV and masked for each expected color (ranges are in `config.json`). Wires run vertically through the region, so the detector looks for narrow columns where the mask covers most of the region's height. Each run of such columns is split around its fill peaks, and for a color expected *n* times the *n* pieces with the highest fill are kept as wires. Partial blobs such as the black rubber boot or the foam sleeve get rejected this way. Two neighbouring wires of the same color need a visible gap or shadow between them to be counted separately. The wire centers are sorted by x and compared with `expected_order`.
 
-Before that, every region's anchor is searched for over the whole frame. Connectors of the same type look alike, so the matches are assigned to regions in the order the regions were configured, left to right (or top to bottom for stacked regions), and each box moves with its connector. If a connector can't be found, its region fails with *Connector not found*. Rotated connectors, or a camera much closer or further away than in the reference image, won't match.
+Before that, every region's anchor is searched for, inside the region's search area if it has one, otherwise over the whole frame. The wires box is kept inside the search area. Without search areas, connectors of the same type look alike, so the matches are assigned to regions in the order the regions were configured, left to right (or top to bottom for stacked regions), and each box moves with its connector. If a connector can't be found, its region fails with *Connector not found*. Rotated connectors, or a camera much closer or further away than in the reference image, won't match.
 
 The settings you can tune in `config.json`:
 
