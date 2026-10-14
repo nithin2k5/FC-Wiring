@@ -1,16 +1,17 @@
 """Tkinter frontend for wire color / order inspection."""
 from __future__ import annotations
 
+import csv
+import threading
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
-
-import csv
 
 import cv2
 import numpy as np
 from PIL import Image, ImageTk
 
+from .camera import RESOLUTIONS, list_cameras, open_camera
 from .detector import draw_result, inspect, load_config, save_config, scale_box
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
@@ -31,6 +32,9 @@ class WireInspectorApp:
         self.scale = 1.0           # display px per frame px
         self.offset = (0, 0)       # canvas offset of the displayed image
         self.capture = None
+        self.cameras = []
+        self.camera_session = 0    # invalidates stale camera loops after restart
+        self.read_failures = 0
         self.drag_start = None
         self.drag_rect = None
         self.image_paths: list[Path] = []
@@ -44,6 +48,7 @@ class WireInspectorApp:
         root.protocol("WM_DELETE_WINDOW", self.on_close)
         root.bind("<Left>", lambda e: self.step_image(-1))
         root.bind("<Right>", lambda e: self.step_image(1))
+        self.refresh_cameras()
 
     # ------------------------------------------------------------------ UI
     def _build_ui(self):
@@ -52,13 +57,6 @@ class WireInspectorApp:
 
         ttk.Button(toolbar, text="Open Images", command=self.open_images).pack(side=tk.LEFT)
         ttk.Button(toolbar, text="Open Folder", command=self.open_folder).pack(side=tk.LEFT, padx=(6, 0))
-        self.cam_btn = ttk.Button(toolbar, text="Start Camera", command=self.toggle_camera)
-        self.cam_btn.pack(side=tk.LEFT, padx=(6, 0))
-        ttk.Label(toolbar, text="Cam #").pack(side=tk.LEFT, padx=(6, 2))
-        self.cam_index = tk.IntVar(value=0)
-        ttk.Spinbox(toolbar, from_=0, to=9, width=3, textvariable=self.cam_index).pack(side=tk.LEFT)
-        self.live_inspect = tk.BooleanVar(value=True)
-        ttk.Checkbutton(toolbar, text="Live inspect", variable=self.live_inspect).pack(side=tk.LEFT, padx=6)
 
         ttk.Separator(toolbar, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=8)
         ttk.Label(toolbar, text="Profile").pack(side=tk.LEFT)
@@ -76,6 +74,28 @@ class WireInspectorApp:
 
         ttk.Button(toolbar, text="INSPECT", command=self.run_inspection).pack(side=tk.RIGHT)
         ttk.Button(toolbar, text="Save Result", command=self.save_result).pack(side=tk.RIGHT, padx=6)
+
+        cambar = ttk.Frame(self.root, padding=(6, 0, 6, 6))
+        cambar.pack(side=tk.TOP, fill=tk.X)
+        ttk.Label(cambar, text="Camera").pack(side=tk.LEFT)
+        self.camera_var = tk.StringVar(value="Searching...")
+        self.camera_box = ttk.Combobox(cambar, textvariable=self.camera_var, state="readonly", width=42)
+        self.camera_box.pack(side=tk.LEFT, padx=4)
+        self.camera_box.bind("<<ComboboxSelected>>", lambda e: self._restart_camera_if_running())
+        self.refresh_btn = ttk.Button(cambar, text="Refresh", command=self.refresh_cameras)
+        self.refresh_btn.pack(side=tk.LEFT)
+        ttk.Label(cambar, text="Resolution").pack(side=tk.LEFT, padx=(10, 2))
+        self.resolution_var = tk.StringVar(value="1280x720")
+        res_box = ttk.Combobox(cambar, textvariable=self.resolution_var, values=RESOLUTIONS,
+                               state="readonly", width=10)
+        res_box.pack(side=tk.LEFT)
+        res_box.bind("<<ComboboxSelected>>", lambda e: self._restart_camera_if_running())
+        self.cam_btn = ttk.Button(cambar, text="Start Camera", command=self.toggle_camera, state=tk.DISABLED)
+        self.cam_btn.pack(side=tk.LEFT, padx=(10, 0))
+        self.live_inspect = tk.BooleanVar(value=True)
+        ttk.Checkbutton(cambar, text="Live inspect", variable=self.live_inspect).pack(side=tk.LEFT, padx=6)
+        self.cam_info = ttk.Label(cambar, text="", foreground="#666")
+        self.cam_info.pack(side=tk.LEFT, padx=6)
 
         body = ttk.Frame(self.root)
         body.pack(fill=tk.BOTH, expand=True)
@@ -342,38 +362,102 @@ class WireInspectorApp:
                          "; ".join(f"{r.name}: {r.message}" for r in result.regions)))
         BatchReport(self, rows, self.profile_var.get())
 
+    def refresh_cameras(self):
+        if self.capture:
+            self.stop_camera()
+        self.refresh_btn.config(state=tk.DISABLED)
+        self.cam_btn.config(state=tk.DISABLED)
+        self.camera_box["values"] = []
+        self.camera_var.set("Searching for cameras...")
+
+        # Probing takes a few seconds; do it off the UI thread. Tk calls must stay
+        # on the main thread, so poll for the result instead of calling back.
+        result = []
+        thread = threading.Thread(target=lambda: result.append(list_cameras()), daemon=True)
+        thread.start()
+
+        def poll():
+            if thread.is_alive():
+                self.root.after(100, poll)
+            else:
+                self._cameras_found(result[0] if result else [])
+
+        poll()
+
+    def _cameras_found(self, cams):
+        previous = self._selected_camera()
+        self.cameras = cams
+        self.refresh_btn.config(state=tk.NORMAL)
+        if not cams:
+            self.camera_var.set("No camera found")
+            self.set_status("No camera found. Connect one and press Refresh.")
+            return
+        self.camera_box["values"] = [c.label for c in cams]
+        keep = next((c for c in cams if previous and c.index == previous.index), cams[0])
+        self.camera_var.set(keep.label)
+        self.cam_btn.config(state=tk.NORMAL)
+        self.set_status(f"Found {len(cams)} camera(s).")
+
+    def _selected_camera(self):
+        return next((c for c in self.cameras if c.label == self.camera_var.get()), None)
+
+    def _restart_camera_if_running(self):
+        if self.capture:
+            self.stop_camera()
+            self.start_camera()
+
     def toggle_camera(self):
         if self.capture:
             self.stop_camera()
+        else:
+            self.start_camera()
+
+    def start_camera(self):
+        cam = self._selected_camera()
+        if cam is None:
             return
-        cap = cv2.VideoCapture(self.cam_index.get())
-        if not cap.isOpened():
-            messagebox.showerror("Camera", f"Could not open camera {self.cam_index.get()}")
+        self.set_status(f"Opening {cam.name}...")
+        self.root.update_idletasks()
+        cap = open_camera(cam.index, self.resolution_var.get())
+        if cap is None:
+            messagebox.showerror("Camera", f"Could not open {cam.name}. It may be in use by another app.")
             return
         self.capture = cap
+        self.camera_session += 1
+        self.read_failures = 0
         self.cam_btn.config(text="Stop Camera")
-        self.set_status("Camera running.")
-        self._camera_loop()
+        w, h = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        self.cam_info.config(text=f"Live {w}x{h}")
+        self.set_status(f"{cam.name} running at {w}x{h}.")
+        self._camera_loop(self.camera_session)
 
     def stop_camera(self):
         if self.capture:
             self.capture.release()
             self.capture = None
             self.cam_btn.config(text="Start Camera")
+            self.cam_info.config(text="")
             self.set_status("Camera stopped. Last frame kept.")
 
-    def _camera_loop(self):
-        if not self.capture:
+    def _camera_loop(self, session):
+        if not self.capture or session != self.camera_session:
             return
         ok, frame = self.capture.read()
-        if ok:
+        if not ok:
+            self.read_failures += 1
+            if self.read_failures >= 30:
+                self.stop_camera()
+                messagebox.showerror("Camera", "Camera stopped sending frames (disconnected?).")
+                return
+        else:
+            self.read_failures = 0
             self.frame = frame
             if self.live_inspect.get() and not self.edit_mode.get():
                 self.run_inspection(quiet=True)
             else:
                 self.display = frame
                 self.redraw()
-        self.root.after(60, self._camera_loop)
+        self.root.after(60, self._camera_loop, session)
 
     # ----------------------------------------------------------- inspection
     def run_inspection(self, quiet=False):
