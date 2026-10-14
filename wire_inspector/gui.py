@@ -162,9 +162,7 @@ class WireInspectorApp:
         ttk.Button(btns, text="Edit order", command=self.edit_region_order).pack(side=tk.LEFT)
         ttk.Button(btns, text="Rename", command=self.rename_region).pack(side=tk.LEFT, padx=4)
         ttk.Button(btns, text="Delete", command=self.delete_region).pack(side=tk.LEFT)
-        ttk.Button(btns, text="Set connector", command=lambda: self.set_region_box("connector")).pack(
-            side=tk.LEFT, padx=4)
-        ttk.Button(btns, text="Set area", command=lambda: self.set_region_box("area")).pack(side=tk.LEFT)
+        ttk.Button(btns, text="Set area", command=lambda: self.set_region_box("area")).pack(side=tk.LEFT, padx=4)
 
         ttk.Label(side, text="Colors: " + ", ".join(self.config["colors"]),
                   foreground="#666").pack(anchor=tk.W, pady=(8, 0))
